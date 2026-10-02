@@ -145,3 +145,6 @@ The script automatically patches Klipper for this board and produces
 `firmware.bin`. It needs an ARM GCC toolchain (with newlib); on macOS the
 PlatformIO toolchain or `gcc-arm-embedded` works. `usart3` is this project's
 build; `usb` / `usba` are alternatives.
+
+Manual build? See **[menuconfig.md](menuconfig.md)** for the full `make menuconfig`
+settings, the equivalent `.config`, macOS notes, and the USB patches.
