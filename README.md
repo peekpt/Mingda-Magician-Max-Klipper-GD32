@@ -100,6 +100,11 @@ circled on the mainboard below (`TX`, `RX`, `GND` marked):
 - 3.3 V logic; grounds are already common through the step-down.
 - Remove any ESP8266 module from the socket.
 
+Raspberry Pi GPIO header — the pins you use are highlighted
+(**pin 6 = GND**, **pin 8 = GPIO14/TX**, **pin 10 = GPIO15/RX**):
+
+![Raspberry Pi 40-pin GPIO header with the used pins highlighted](images/rpi-gpio.png)
+
 ## 3. Raspberry Pi software
 
 1. Install Raspberry Pi OS and use **KIAUH** to install
