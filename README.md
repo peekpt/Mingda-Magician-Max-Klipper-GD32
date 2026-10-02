@@ -1,3 +1,5 @@
+![Mingda Magician Max — Klipper (GD32)](images/banner.png)
+
 # Klipper for the Mingda Magician Max (GD32)
 
 > ## ⚠️ DISCLAIMER — READ BEFORE STARTING
