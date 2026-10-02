@@ -77,24 +77,26 @@ circled on the mainboard below (`TX`, `RX`, `GND` marked):
 ![W1 / USART3 socket on the mainboard](images/usart3.png)
 
 ```
-        W1 socket (front view)
-        ┌───────────────┐
-        │ 1 TX    2 GND │
-        │ 3 EN    4 GPIO2│
-        │ 5 RST   6 GPIO0│
-        │ 7 3V3   8 RX  │
-        └───────────────┘
+        W1 / USART3 socket (front view)
 
-   Pi GPIO14 (TX, pin 8)   ───────────────►  pin 1  (MCU RX)
-   Pi GPIO15 (RX, pin 10)  ◄───────────────  pin 8  (MCU TX)
+        ┌─────────────────┐
+        │ 1 RX     2 GND  │
+        │ 3 EN     4 GPIO2│
+        │ 5 RST    6 GPIO0│
+        │ 7 3V3    8 TX   │
+        └─────────────────┘
+
+   Pi GPIO14 (TX, pin 8)   ───────────────►  pin 8  (TX)
+   Pi GPIO15 (RX, pin 10)  ◄───────────────  pin 1  (RX)
    Pi GND    (GND, pin 6)  ────────────────  pin 2  (GND)
 ```
 
-- The socket is **female** (for an ESP module), so its `TX`/`RX` labels are the
-  **module's** signals and are **crossed** relative to the printer's MCU:
-  **pin 1 = MCU RX**, **pin 8 = MCU TX**. Wire the Pi crossed as shown; if there
-  is no connection, swap pins 1 and 8.
-- **Do not connect** pin 7 (3.3 V) or any other pin.
+- The socket's `TX`/`RX` labels are the **module's** signals (it's a female
+  socket for an ESP module), so they are crossed relative to the printer's MCU:
+  the printer **MCU RX is on pin 8 (`TX`)** and **MCU TX is on pin 1 (`RX`)**.
+  Connect Pi **TX → pin 8** and Pi **RX → pin 1**. If there is no connection,
+  swap pins 1 and 8.
+- Leave every other pin unconnected (notably pin 7, 3.3 V).
 - 3.3 V logic; grounds are already common through the step-down.
 - Remove any ESP8266 module from the socket.
 
