@@ -129,18 +129,60 @@ online (serial `/dev/serial0`, 250000 baud). If it does, you're done with setup.
 
 ## 5. Calibrate (do this once)
 
+Z homes on the **IR endstop**, which is contactless — the nozzle never touches
+the bed. That means `Z=0` is the IR trigger, a few mm **above** the bed, and the
+bed mesh provides the remaining offset. So do **both** calibrations below before
+your first print.
+
+All macros preheat the bed to **60 °C** and the hotend to **200 °C** and home
+(IR) for you, so you only have to send one command each.
+
+### 5.1 Probe / Z-offset — `PROBE_CALIBRATE`
+
+Sets the distance between the probe trigger and the nozzle tip (`z_offset`).
+
+1. Send:
+   ```
+   PROBE_CALIBRATE
+   ```
+   It heats the bed/hotend, homes all axes, **centres the toolhead over the bed**
+   (`X160 Y160`) and starts the manual probe ~5 mm above the bed.
+2. Lower the nozzle in small steps until a sheet of paper has **slight drag**.
+   Use the Mainsail `TESTZ` buttons, the `Z_DOWN` / `Z_UP` macros, or the console:
+   ```
+   TESTZ Z=-1        ; repeat ~5x to get close
+   TESTZ Z=-0.1      ; fine steps until the paper drags
+   ```
+3. `ACCEPT` then `SAVE_CONFIG` — this writes `z_offset` to `printer.cfg`.
+
+### 5.2 Bed mesh — `G29`
+
+Maps the bed so the first layer follows any warp or tilt.
+
+1. Send:
+   ```
+   G29
+   ```
+   It preheats (60 / 200 °C), homes (IR), then probes a **4 × 4** grid
+   (3 samples per point). The result is saved as the profile `default`.
+2. Run `SAVE_CONFIG` to persist it.
+
+The mesh is applied **automatically** on every Klipper start (the `LOAD_MESH`
+delayed-gcode) and again by `START_PRINT`, so you do **not** need to re-run `G29`
+each print — only after moving the printer or changing the bed/nozzle.
+
+> First layer a touch high or low? That's `z_offset`: nudge it with
+> `SET_GCODE_OFFSET Z=±0.02` → `Z_OFFSET_APPLY_PROBE` → `SAVE_CONFIG`, or simply
+> re-run `PROBE_CALIBRATE`.
+
+### 5.3 PID (heaters)
+
 ```
-G28                       ; home all axes
-PROBE_CALIBRATE           ; lower with TESTZ, then ACCEPT + SAVE_CONFIG
 PID_CALIBRATE HEATER=extruder TARGET=200
 SAVE_CONFIG
 PID_CALIBRATE HEATER=heater_bed TARGET=60
 SAVE_CONFIG
-BED_MESH_CALIBRATE        ; saves the mesh automatically
 ```
-`PROBE_CALIBRATE` starts the nozzle ~5 mm above the bed: use the Mainsail
-`TESTZ` buttons (or `TESTZ Z=-0.1`) until a sheet of paper has slight drag, then
-`ACCEPT` and `SAVE_CONFIG`.
 
 ## 6. Troubleshooting
 
