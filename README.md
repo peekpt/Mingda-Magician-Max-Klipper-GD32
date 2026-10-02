@@ -9,6 +9,18 @@ Tested on: Mingda Magician Max (GD32F407VET6 mainboard) + Raspberry Pi Zero 2 W.
 > The stock touchscreen is **not supported** by Klipper — you use Mainsail/Fluidd
 > in a browser instead.
 
+## Folder layout
+
+This repository is only `klipper_printer/`. The Klipper **source is not
+included** — only clone it next to this folder if you want to rebuild the
+firmware.
+
+```
+your-folder/
+├── klipper_printer/     <- this repo (firmware.bin, printer.cfg, macros.cfg, guide)
+└── klipper/             <- Klipper source (only needed to rebuild)
+```
+
 ## 1. Flash the firmware (SD card)
 
 1. Format a microSD card as **FAT32**.
@@ -114,7 +126,22 @@ BED_MESH_CALIBRATE        ; saves the mesh automatically
 
 ## Rebuild the firmware (optional)
 
+Clone the Klipper source **as a sibling of this folder** (so it lands in
+`../klipper`):
+
 ```
+# from the parent folder that contains klipper_printer/
+git clone https://github.com/Klipper3d/klipper
+```
+
+Then build:
+
+```
+cd klipper_printer
 ./build_klipper_fw.sh usart3
 ```
-Requires a Klipper clone in `../klipper` and an ARM GCC toolchain.
+
+The script automatically patches Klipper for this board and produces
+`firmware.bin`. It needs an ARM GCC toolchain (with newlib); on macOS the
+PlatformIO toolchain or `gcc-arm-embedded` works. `usart3` is this project's
+build; `usb` / `usba` are alternatives.
