@@ -150,13 +150,12 @@ Then build:
 
 ```
 cd klipper_printer
-./build_klipper_fw.sh usart3
+./build_klipper_fw.sh
 ```
 
-The script automatically patches Klipper for this board and produces
-`firmware.bin`. It needs an ARM GCC toolchain (with newlib); on macOS the
-PlatformIO toolchain or `gcc-arm-embedded` works. `usart3` is this project's
-build; `usb` / `usba` are alternatives.
+The script builds the firmware (USART3) and produces `firmware.bin`. It needs an
+ARM GCC toolchain (with newlib); on macOS the PlatformIO toolchain or
+`gcc-arm-embedded` works.
 
 Manual build? See **[menuconfig.md](menuconfig.md)** for the full `make menuconfig`
-settings, the equivalent `.config`, macOS notes, and the USB patches.
+settings, the equivalent `.config` and macOS notes.

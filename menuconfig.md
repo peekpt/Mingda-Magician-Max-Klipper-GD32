@@ -1,8 +1,8 @@
 # Compiling the Klipper MCU firmware yourself (`make menuconfig`)
 
 Use this if you want to build `firmware.bin` from source instead of using the
-prebuilt one. For this printer the MCU talks to the Pi over **USART3**, so that
-is the configuration below.
+prebuilt one. The MCU talks to the Pi over **USART3**, so that is the only
+interface needed.
 
 ## 0. Prerequisites
 
@@ -88,54 +88,3 @@ xxd -l 8 out/klipper.bin                 # starts with SP 0x2002...., reset 0x08
 - `GD32F407VET6` is register-compatible with `STM32F407` (same peripheral
   addresses, PLL layout and flash wait-state register), which is why we target
   STM32F407.
-
-## USB alternatives (optional, need a patch)
-
-The printer can also be driven over USB, but upstream Klipper only allows the
-`USB (on PB14/PB15)` option for STM32H743/H750. To use it on STM32F407 you must
-patch two files. `build_klipper_fw.sh usb` applies this automatically; the
-edits are:
-
-**`src/stm32/Kconfig`** — allow the option for F4:
-
-```diff
-     config STM32_USB_PB14_PB15
-         bool "USB (on PB14/PB15)"
--        depends on MACH_STM32H743 || MACH_STM32H750
-+        depends on MACH_STM32H743 || MACH_STM32H750 || MACH_STM32F4x5
-         select USBSERIAL
-```
-
-**`src/stm32/usbotg.c`** — use the F4 OTG_HS clock bit:
-
-```diff
- #if IS_OTG_HS
-   #define USB_PERIPH_BASE USB_OTG_HS_PERIPH_BASE
-   #define OTG_IRQn OTG_HS_IRQn
--  #define USBOTGEN RCC_AHB1ENR_USB1OTGHSEN
-+  #if CONFIG_MACH_STM32H7
-+    #define USBOTGEN RCC_AHB1ENR_USB1OTGHSEN
-+  #else
-+    #define USBOTGEN RCC_AHB1ENR_OTGHSEN
-+  #endif
- #else
-```
-
-**`src/stm32/usbotg.c`** in `usb_init()` — enable the OTG_HS clock on AHB1:
-
-```diff
-     SET_BIT(RCC->AHB1ENR, USBOTGEN);
-+#elif IS_OTG_HS
-+    SET_BIT(RCC->AHB1ENR, USBOTGEN);
- #else
-     RCC->AHB2ENR |= RCC_AHB2ENR_OTGFSEN;
- #endif
-```
-
-Then choose:
-- **USB-C:** `USB (on PB14/PB15)` → `.config` `CONFIG_STM32_USB_PB14_PB15=y`
-- **USB-A:** `USB (on PA11/PA12)` → `.config` `CONFIG_STM32_USB_PA11_PA12=y` (no patch needed)
-
-> Note: on a Raspberry Pi Zero 2 W, its `dwc2` USB host cannot enumerate this
-> board's full-speed USB-C device. Prefer the USART3 link; USB is for hosts
-> that handle full-speed devices (PC, Mac, Pi 3/4/5).
