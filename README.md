@@ -80,11 +80,15 @@ The printer has an 8-pin **"W1" / ESP8266 socket** carrying **USART3**:
         │ 7 3V3   8 RX  │
         └───────────────┘
 
-   Pi GPIO14 (TX, pin 8)   ───────────────►  pin 8  (RX)
-   Pi GPIO15 (RX, pin 10)  ◄───────────────  pin 1  (TX)
+   Pi GPIO14 (TX, pin 8)   ───────────────►  pin 1  (MCU RX)
+   Pi GPIO15 (RX, pin 10)  ◄───────────────  pin 8  (MCU TX)
    Pi GND    (GND, pin 6)  ────────────────  pin 2  (GND)
 ```
 
+- The socket is **female** (for an ESP module), so its `TX`/`RX` labels are the
+  **module's** signals and are **crossed** relative to the printer's MCU:
+  **pin 1 = MCU RX**, **pin 8 = MCU TX**. Wire the Pi crossed as shown; if there
+  is no connection, swap pins 1 and 8.
 - **Do not connect** pin 7 (3.3 V) or any other pin.
 - 3.3 V logic; grounds are already common through the step-down.
 - Remove any ESP8266 module from the socket.
