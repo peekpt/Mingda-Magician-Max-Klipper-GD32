@@ -1,5 +1,17 @@
 # Klipper for the Mingda Magician Max (GD32)
 
+> ## ⚠️ DISCLAIMER — READ BEFORE STARTING
+>
+> - This modification requires **opening the printer and removing the bottom
+>   cover** to access the mainboard, power supply and wiring.
+> - There is an **electric shock hazard**. The PSU input is mains voltage, and
+>   the PSU/mainboard can hold lethal voltages even after power-off.
+>   **Unplug the printer from the wall before working on it**, and never touch
+>   the mains/PSU section while powered.
+> - Proceed only if you are comfortable with electronics and are careful.
+>   **You do this at your own risk** — no warranty, and you can damage the
+>   printer or injure yourself.
+
 Minimal guide to replace the stock Marlin firmware with **Klipper**, talking to
 a Raspberry Pi over a **serial (UART) link**. Assumes basic electronics skills
 (soldering/wiring, DC-DC converters, SD cards).
