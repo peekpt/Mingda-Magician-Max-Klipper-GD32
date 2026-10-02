@@ -71,7 +71,10 @@ from the printer's PSU, and **3 jumper wires** for the UART.
 
 ### 2.2 UART link (printer → Pi)
 
-The printer has an 8-pin **"W1" / ESP8266 socket** carrying **USART3**:
+The printer has an 8-pin **"W1" / ESP8266 socket** carrying **USART3** —
+circled on the mainboard below (`TX`, `RX`, `GND` marked):
+
+![W1 / USART3 socket on the mainboard](images/usart3.png)
 
 ```
         W1 socket (front view)
