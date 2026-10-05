@@ -120,7 +120,11 @@ Raspberry Pi GPIO header — you use **pin 8 = GPIO14 (UART0 TX)**,
    sudo reboot
    ```
    Verify: `ls -l /dev/serial0` → should point to `ttyAMA0`.
-3. Copy `printer.cfg` and `macros.cfg` into `~/printer_data/config/`.
+3. Copy `printer.cfg`, `macros.cfg` and `moonraker.conf` into
+   `~/printer_data/config/`.
+   (`moonraker.conf` adds the **Sound** on/off switch to the Mainsail dashboard
+   — see section 6. It is otherwise optional.)
+   Then optionally install the shutdown tune (section 8).
 
 ## 4. First start
 
@@ -135,7 +139,9 @@ bed mesh provides the remaining offset. So do **both** calibrations below before
 your first print.
 
 All macros preheat the bed to **60 °C** and the hotend to **200 °C** and home
-(IR) for you, so you only have to send one command each.
+(IR) for you, so you only have to send one command each. `G28` lifts **Z by 5 mm
+before homing X/Y** (`[homing_override]`) so the nozzle can't drag on the bed;
+only `PROBE_CALIBRATE` centres the toolhead (the probe needs to be over the bed).
 
 ### 5.1 Probe / Z-offset — `PROBE_CALIBRATE`
 
@@ -184,7 +190,95 @@ PID_CALIBRATE HEATER=heater_bed TARGET=60
 SAVE_CONFIG
 ```
 
-## 6. Troubleshooting
+## 6. Macros, sounds & mute
+
+### Preheat macros
+
+Set the heaters for a material (they only set the targets — add `M190`/`M109`
+if you want to wait):
+
+| Macro | Bed | Hotend |
+|---|---|---|
+| `PREHEAT_PLA` | 60 °C | 200 °C |
+| `PREHEAT_PETG` | 80 °C | 240 °C |
+| `PREHEAT_ABS` | 100 °C | 250 °C |
+| `PREHEAT_TPU` | 50 °C | 230 °C |
+
+### Sounds (passive buzzer on PG11)
+
+The buzzer plays short tunes: **3 beeps** at `START_PRINT`, a **"beep boop" ×4**
+on `PAUSE`, and a finish **jingle** on `END_PRINT`. `M300 S<Hz> P<ms>` plays a
+single note (e.g. `M300 S1000 P200`). The buzzer uses `[pwm_cycle_time beeper]`
+so the frequency can change at runtime.
+
+### Mute switch
+
+A **Sound** switch appears in the Mainsail dashboard (top bar). Turning it **off**
+mutes `M300` and every tune. It is a Moonraker `klipper_device` mapped to the
+`_SOUND` macro:
+
+```ini
+# moonraker.conf
+[power Sound]
+type: klipper_device
+object_name: gcode_macro _SOUND
+```
+
+Manual control: `SOUND_ON`, `SOUND_OFF`, `SOUND_TOGGLE`. The mute state resets to
+**on** after a Klipper restart.
+
+## 7. Input shaping
+
+Enabled with measured frequencies:
+
+```ini
+[input_shaper]
+shaper_type: ei
+shaper_freq_x: 25.5
+shaper_freq_y: 74.7
+```
+
+Without an accelerometer, measure the ringing frequency with the manual
+ringing-tower test:
+
+1. Slice `~/klipper/docs/prints/ringing_tower.stl` (0.2–0.25 mm layers, no infill,
+   1–2 perimeters, outer walls 80–100 mm/s, min layer time ≤ 3 s, don't rotate).
+2. In the console:
+   ```
+   RESTART
+   SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0
+   SET_PRESSURE_ADVANCE ADVANCE=0
+   SET_INPUT_SHAPER SHAPER_FREQ_X=0 SHAPER_FREQ_Y=0
+   TUNING_TOWER COMMAND=SET_VELOCITY_LIMIT PARAMETER=ACCEL START=1500 STEP_DELTA=500 STEP_HEIGHT=5
+   ```
+3. Print it; on each axis measure the distance **D** across **N** ripples (skip
+   the first 1–2), then `freq = V · N / D` (V = outer-wall speed).
+4. Put the numbers in `[input_shaper]` and restart. **EI** is usually best for a
+   bed-slinger. Once shaping is on you can raise `max_accel` (currently 800).
+
+> `SET_INPUT_SHAPER` only changes the running session — it is **not** saved by
+> `SAVE_CONFIG`; the values must be in `printer.cfg`.
+
+## 8. Shutdown tune (Pi)
+
+Plays the XP-style melody on the buzzer on a **graceful Pi shutdown** (Mainsail's
+*Shutdown host*, `sudo shutdown`, `sudo reboot`, …). Klipper/Moonraker are still
+running at that moment, so the tune is sent before they stop.
+
+Two files are shipped: `shutdown_tune.sh` (sends `PLAY_SHUTDOWN_TUNE` via
+Moonraker, then waits) and `printer-shutdown-tune.service` (systemd unit whose
+`ExecStop` runs it **before** Klipper/Moonraker are stopped). Install on the Pi:
+
+```
+sudo cp ~/printer_data/config/printer-shutdown-tune.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now printer-shutdown-tune.service
+```
+
+> Only works for a **graceful shutdown** — not on power loss, and not on a Klipper
+> error shutdown (macros don't run in that state).
+
+## 9. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
@@ -193,6 +287,8 @@ SAVE_CONFIG
 | `TMC ... ShortToSupply` | Z/Z1 already run spreadCycle; check the motor connector |
 | Screen stays blank | Expected — stock TFT unsupported |
 | First layer too high/low | Re-run `PROBE_CALIBRATE`, or `SET_GCODE_OFFSET Z=...` |
+| No buzzer sounds | Check the **Sound** switch / run `SOUND_ON` |
+| No sound on shutdown | Must be a graceful Pi shutdown (section 8) |
 
 ## Rebuild the firmware (optional)
 

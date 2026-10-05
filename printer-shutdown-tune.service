@@ -1,0 +1,14 @@
+[Unit]
+Description=Play a tune on the printer buzzer before Pi shutdown
+After=klipper.service moonraker.service
+Wants=klipper.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/home/mingda/printer_data/config/shutdown_tune.sh
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
