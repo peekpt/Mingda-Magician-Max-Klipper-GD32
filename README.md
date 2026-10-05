@@ -259,24 +259,30 @@ ringing-tower test:
 > `SET_INPUT_SHAPER` only changes the running session — it is **not** saved by
 > `SAVE_CONFIG`; the values must be in `printer.cfg`.
 
-## 8. Shutdown tune (Pi)
+## 8. Startup & shutdown tunes (Pi)
 
-Plays the XP-style melody on the buzzer on a **graceful Pi shutdown** (Mainsail's
-*Shutdown host*, `sudo shutdown`, `sudo reboot`, …). Klipper/Moonraker are still
-running at that moment, so the tune is sent before they stop.
+Two systemd helpers play the Windows-style melodies on the buzzer:
 
-Two files are shipped: `shutdown_tune.sh` (sends `PLAY_SHUTDOWN_TUNE` via
-Moonraker, then waits) and `printer-shutdown-tune.service` (systemd unit whose
-`ExecStop` runs it **before** Klipper/Moonraker are stopped). Install on the Pi:
+- **Startup** — `printer-startup-tune.service` runs `startup_tune.sh` at boot: it
+  waits until Klipper reports *ready*, then plays `PLAY_STARTUP_TUNE`.
+- **Shutdown** — `printer-shutdown-tune.service` runs `shutdown_tune.sh` via
+  `ExecStop` on a **graceful shutdown/reboot** (Mainsail *Shutdown host*,
+  `sudo shutdown`/`reboot`, …): it plays `PLAY_SHUTDOWN_TUNE` and waits so the
+  melody finishes **before** Klipper/Moonraker are stopped.
+
+Files shipped: `startup_tune.sh`, `printer-startup-tune.service`,
+`shutdown_tune.sh`, `printer-shutdown-tune.service`. Install on the Pi:
 
 ```
+sudo cp ~/printer_data/config/printer-startup-tune.service /etc/systemd/system/
 sudo cp ~/printer_data/config/printer-shutdown-tune.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now printer-shutdown-tune.service
+sudo systemctl enable --now printer-startup-tune.service printer-shutdown-tune.service
 ```
 
-> Only works for a **graceful shutdown** — not on power loss, and not on a Klipper
-> error shutdown (macros don't run in that state).
+> The shutdown tune only works on a **graceful shutdown** — not on power loss, and
+> not on a Klipper error shutdown (macros don't run in that state). On a reboot
+> both play (shutdown tune, then startup tune). If muted (section 6), no tunes.
 
 ## 9. Troubleshooting
 

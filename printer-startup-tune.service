@@ -1,0 +1,12 @@
+[Unit]
+Description=Play the Windows startup tune on the printer buzzer after boot
+After=moonraker.service klipper.service
+Wants=moonraker.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/mingda/printer_data/config/startup_tune.sh
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target
