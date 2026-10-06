@@ -280,31 +280,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now printer-startup-tune.service printer-shutdown-tune.service
 ```
 
-### Delayed final beep on the host speaker
-
-If the Pi has a **USB speaker** (or HDMI + powered display), a **beep plays ~30 s
-after the tune**, as the very last step before the Pi powers off — so you know it
-has finished shutting down. The shutdown is effectively stretched by those 30 s.
-
-- `shutdown_tune.sh` records the tune start time (`.shutdown_ts`).
-- `shutdown_beep.sh` is installed as a **system-shutdown hook**; it waits until
-  30 s have elapsed since the tune, then plays `beep.wav` on the first (prefers
-  USB) playback card.
-
-Install the hook (needs root):
-```
-sudo cp ~/printer_data/config/shutdown_beep.sh /usr/lib/systemd/system-shutdown/zz-printer-beep.sh
-sudo chmod +x /usr/lib/systemd/system-shutdown/zz-printer-beep.sh
-```
-Adjust the delay by editing `DELAY=30` in `shutdown_beep.sh`.
-
-> The beep needs a working playback device at that moment — a **USB speaker** is
-> the most reliable; HDMI needs the display powered. With no speaker it is
-> silently skipped.
-
-> The tunes/beep only work on a **graceful shutdown** — not on power loss, and not
-> on a Klipper error shutdown (macros don't run in that state). On a reboot both
-> play (shutdown tune, then startup tune). If muted (section 6), no tunes.
+> The shutdown tune only works on a **graceful shutdown** — not on power loss, and
+> not on a Klipper error shutdown (macros don't run in that state). On a reboot
+> both play (shutdown tune, then startup tune). If muted (section 6), no tunes.
 
 ## 9. Troubleshooting
 
