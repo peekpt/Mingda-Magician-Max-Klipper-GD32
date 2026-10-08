@@ -207,9 +207,20 @@ if you want to wait):
 ### Sounds (passive buzzer on PG11)
 
 The buzzer plays short tunes: **3 beeps** at `START_PRINT`, a **"beep boop" ×4**
-on `PAUSE`, and a finish **jingle** on `END_PRINT`. `M300 S<Hz> P<ms>` plays a
-single note (e.g. `M300 S1000 P200`). The buzzer uses `[pwm_cycle_time beeper]`
-so the frequency can change at runtime.
+on `PAUSE`, and the finish jingle `ta, | ta-ra-ra-ta | ta | taaaa` on
+`END_PRINT`. `M300 S<Hz> P<ms>` plays a single note (e.g. `M300 S1000 P200`) and
+`TONE S<Hz> P<ms> GAP=<ms>` plays a note followed by an explicit silence. The
+buzzer uses `[pwm_cycle_time beeper]` so the frequency can change at runtime.
+
+> **Write tunes in 100 ms steps.** A `pwm_cycle_time` pin accepts only one
+> `SET_PIN` per **100 ms** (Klipper's `MIN_SCHEDULE_TIME`): a note or gap shorter
+> than that is silently stretched to 100 ms, and a note that starts late ends at
+> its written time, so it gets cut short. A tune written with 40 ms gaps
+> therefore plays as a flat stream of identical 100 ms beeps. Every `P` and
+> `GAP` in the tunes here is a multiple of 100 ms.
+>
+> To hear an edit before flashing, render it with `tune_preview.py` (next to this
+> folder): it simulates that clamp and writes `tune_preview.wav`.
 
 ### Mute switch
 
