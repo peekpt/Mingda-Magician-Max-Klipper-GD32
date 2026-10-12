@@ -43,11 +43,16 @@ And add to `printer.cfg`:
 ```ini
 [display]
 lcd_type: st7796
-scale: 3
-cols: 20
-rows: 4
+scale: 2
+cols: 30
+rows: 10
+display_group: my_30x10
 madctl: 0xE8     # MV|MX|MY|BGR for this panel (tweak if colours/flip are odd)
 ```
+
+The **30x10** grid gives 16x32 px cells that fill the 480x320 panel exactly
+(no gaps). The status layout is a custom `[display_data my_30x10 ...]` group in
+`printer.cfg`.
 
 Restart the **klipper service** (a plain `RESTART` does not reload Python modules).
 

@@ -320,11 +320,13 @@ screen and menus on the original screen.
   ```ini
   [display]
   lcd_type: st7796
-  scale: 3
-  cols: 20
-  rows: 4
+  scale: 2
+  cols: 30
+  rows: 10
+  display_group: my_30x10
   madctl: 0xE8     # MV|MX|MY|BGR for this panel
   ```
+  (30x10 cells of 16x32 px fill the 480x320 panel exactly.)
 - Full build/install steps and the `TFT_*` diagnostic commands:
   **[mcu/README.md](mcu/README.md)**.
 
