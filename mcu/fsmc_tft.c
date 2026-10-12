@@ -133,6 +133,64 @@ tft_icon(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t fg,
     }
 }
 
+// Draw a 1-bit bitmap chunk: `rows` rows of a `w`-wide image, MSB-first,
+// starting at output row (y + rowoff). rowbytes = (w+7)/8.
+static void
+tft_bmp(uint16_t x, uint16_t y, uint16_t w, uint8_t rows, uint16_t fg,
+        uint16_t bg, const uint8_t *data, uint8_t len)
+{
+    uint16_t rowbytes = (w + 7) / 8;
+    if (!w || !rows || len < (uint16_t)rowbytes * rows)
+        return;
+    tft_set_window(x, y, x + w - 1, y + rows - 1);
+    TFT_REG = 0x2C; // RAMWR
+    for (uint32_t row = 0; row < rows; row++) {
+        const uint8_t *rp = data + row * rowbytes;
+        for (uint32_t col = 0; col < w; col++) {
+            uint8_t bit = (rp[col >> 3] << (col & 7)) & 0x80;
+            TFT_RAM = bit ? fg : bg;
+        }
+    }
+}
+
+static uint16_t
+isqrt_u32(uint32_t v)
+{
+    uint32_t r = 0;
+    while ((r + 1) * (r + 1) <= v)
+        r++;
+    return r;
+}
+
+// Filled rounded rectangle (corner radius rad).
+static void
+tft_rrect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t rad,
+          uint16_t color)
+{
+    if (!w || !h)
+        return;
+    if (rad * 2 > w) rad = w / 2;
+    if (rad * 2 > h) rad = h / 2;
+    for (uint32_t row = 0; row < h; row++) {
+        uint32_t inset = 0;
+        if (row < rad) {
+            uint32_t d = rad - row;
+            inset = rad - isqrt_u32(rad * rad - d * d);
+        } else if (row >= h - rad) {
+            uint32_t d = h - row;
+            if (d > rad) d = rad;
+            inset = rad - isqrt_u32(rad * rad - d * d);
+        }
+        uint16_t x0 = x + inset, x1 = x + w - 1 - inset;
+        if (x0 > x1)
+            continue;
+        tft_set_window(x0, y + row, x1, y + row);
+        TFT_REG = 0x2C; // RAMWR
+        for (uint32_t c = x0; c <= x1; c++)
+            TFT_RAM = color;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Host commands
 // ---------------------------------------------------------------------------
@@ -147,6 +205,28 @@ command_tft_icon(uint32_t *args)
 }
 DECL_COMMAND(command_tft_icon,
              "tft_icon x=%hu y=%hu w=%hu h=%hu fg=%hu bg=%hu data=%*s");
+
+// tft_bmp x= y= w= rows= rowoff= fg= bg= data=<chunk>
+void
+command_tft_bmp(uint32_t *args)
+{
+    uint8_t len = args[7];
+    const uint8_t *data = command_decode_ptr(args[8]);
+    tft_bmp(args[0], args[1] + args[4], args[2], args[3], args[5], args[6],
+            data, len);
+}
+DECL_COMMAND(command_tft_bmp,
+             "tft_bmp x=%hu y=%hu w=%hu rows=%c rowoff=%c fg=%hu bg=%hu"
+             " data=%*s");
+
+// tft_rrect x= y= w= h= r= color=
+void
+command_tft_rrect(uint32_t *args)
+{
+    tft_rrect(args[0], args[1], args[2], args[3], args[4], args[5]);
+}
+DECL_COMMAND(command_tft_rrect,
+             "tft_rrect x=%hu y=%hu w=%hu h=%hu r=%c color=%hu");
 
 // tft_cmd reg=<byte>
 void

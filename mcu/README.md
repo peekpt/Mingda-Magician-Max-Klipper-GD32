@@ -95,6 +95,24 @@ touch_swipe_min: 120      # raw movement to count as a swipe
 
 Use `TFT_TOUCH_MON` to calibrate `touch_threshold` and the invert/swap options.
 
+## GUI (Marlin-like, tap only)
+
+`gui: True` in `[display]` switches the chip to a touch GUI instead of the
+Klipper text menu:
+
+- **Top + bottom status bars** (nozzle/bed temps, elapsed time, `M117` message).
+- **Main menu**: 4x2 rounded buttons with MDI icons (from KlipperScreen's icon
+  font): Preheat, Mover, Extruder, Home, Nivelar, Probe, Arrefecer, Config.
+- **Mover**: Z+/Y+/Z- plus a distance button (0.1/1/10 mm - tap to cycle),
+  X-/Y-/X+/Voltar.
+- **Extruder**: load/unload, E +/-.
+- **Probe**: PROBE_CALIBRATE, TESTZ steps, ACCEPT, SAVE_CONFIG.
+- **Config**: PID, SAVE_CONFIG, restart.
+
+Icons are 1-bit MDI bitmaps rendered off-line into `tft_icons.py`. Touch
+calibration: `raw_x_min/max`, `raw_y_min/max`, `touch_swap_xy`,
+`touch_invert_x/y` (measure with `TFT_TOUCH_MON T=12`).
+
 ## Status / TODO
 
 - Text, colours, orientation, native icons and **touch menu navigation** work.
