@@ -181,9 +181,112 @@ command_tft_char(uint32_t *args)
 DECL_COMMAND(command_tft_char,
              "tft_char x=%hu y=%hu scale=%c ch=%c fg=%hu bg=%hu");
 
+// ---------------------------------------------------------------------------
+// XPT2046 resistive touch (software SPI: CS=PB6, SCK=PB3, MOSI=PB5, MISO=PB4)
+// ---------------------------------------------------------------------------
+#define TOUCH_PORT GPIOB
+#define TOUCH_CS   6
+#define TOUCH_SCK  3
+#define TOUCH_MOSI 5
+#define TOUCH_MISO 4
+
+#define XP_X   0x90
+#define XP_Y   0xD0
+#define XP_Z1  0xB0
+
+static inline void
+tp_set(uint32_t pin, int v)
+{
+    if (v)
+        TOUCH_PORT->BSRR = 1UL << pin;
+    else
+        TOUCH_PORT->BSRR = 1UL << (pin + 16);
+}
+
+// The XPT2046 needs a fairly slow clock; ~40 cycles per edge is roughly 1-2 MHz.
+static inline void
+tp_delay(void)
+{
+    for (volatile int i = 0; i < 30; i++)
+        asm volatile("");
+}
+
+static uint8_t
+tp_io(uint8_t data)
+{
+    uint8_t result = 0;
+    for (uint8_t j = 0x80; j; j >>= 1) {
+        tp_set(TOUCH_SCK, 0);
+        tp_set(TOUCH_MOSI, data & j);
+        tp_delay();
+        if ((TOUCH_PORT->IDR >> TOUCH_MISO) & 1)
+            result |= j;
+        tp_set(TOUCH_SCK, 1);
+        tp_delay();
+    }
+    tp_set(TOUCH_SCK, 0);
+    return result;
+}
+
+// Three conversions per channel (the first ones can be stale); returns the
+// 12-bit value and, via *raw, the last 16-bit word (for diagnostics).
+static uint16_t
+tp_sample(uint8_t cmd, uint16_t *raw)
+{
+    uint16_t d = 0, r = 0;
+    tp_set(TOUCH_CS, 0);
+    for (int i = 0; i < 3; i++) {
+        tp_io(cmd);
+        uint8_t b0 = tp_io(0);
+        uint8_t b1 = tp_io(0);
+        r = ((uint16_t)b0 << 8) | b1;
+        d = ((uint16_t)b0 << 4) | (b1 >> 4);
+    }
+    tp_set(TOUCH_CS, 1);
+    if (raw)
+        *raw = r;
+    return d;
+}
+
+static uint16_t
+tp_read(uint8_t cmd)
+{
+    return tp_sample(cmd, NULL);
+}
+
+static void
+tp_setup(void)
+{
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
+    static const uint32_t outs[3] = {TOUCH_CS, TOUCH_SCK, TOUCH_MOSI};
+    for (int i = 0; i < 3; i++) {
+        uint32_t sh = outs[i] * 2;
+        TOUCH_PORT->MODER = (TOUCH_PORT->MODER & ~(3UL << sh)) | (1UL << sh);
+        TOUCH_PORT->OSPEEDR |= (3UL << sh);
+        TOUCH_PORT->PUPDR &= ~(3UL << sh);
+    }
+    TOUCH_PORT->MODER &= ~(3UL << (TOUCH_MISO * 2)); // input
+    TOUCH_PORT->PUPDR &= ~(3UL << (TOUCH_MISO * 2));
+    tp_set(TOUCH_CS, 1);
+    tp_set(TOUCH_SCK, 0);
+}
+
+// tft_touch -> tft_touch_result x= y= z=
+void
+command_tft_touch(uint32_t *args)
+{
+    uint16_t xr, yr;
+    uint16_t z = tp_read(XP_Z1);
+    uint16_t x = tp_sample(XP_X, &xr);
+    uint16_t y = tp_sample(XP_Y, &yr);
+    sendf("tft_touch_result x=%hu y=%hu z=%hu xr=%hu yr=%hu", x, y, z, xr, yr);
+}
+DECL_COMMAND(command_tft_touch, "tft_touch");
+
 void
 tft_init(void)
 {
     tft_fsmc_setup();
+    tp_setup();
 }
 DECL_INIT(tft_init);

@@ -60,11 +60,40 @@ Restart the **klipper service** (a plain `RESTART` does not reload Python module
 | `TFT_LIMITS` | edge frame + 5px-padding frame |
 | `TFT_LINES W=20` | alternating vertical b/w stripes |
 | `TFT_FILLV R= G= B= W=` | fill a colour as vertical strips |
+| `TFT_TOUCH` | read the XPT2046 raw values once |
+| `TFT_TOUCH_MON T=6` | sample min/max of x/y/z for N seconds |
+| `TFT_TOUCH_DEBUG` | toggle per-poll logging of raw touch values |
+
+## Touch (XPT2046)
+
+The resistive touch controller is on a software SPI bus
+(`CS=PB6, SCK=PB3, MOSI=PB5, MISO=PB4`); the MCU slows the bit-bang down so the
+XPT2046 can keep up. The host polls it (~25 Hz), turns touches into gestures and
+feeds them to the Klipper menu:
+
+- **tap** -> `click` (select/open)
+- **swipe up/down** -> `up`/`down` (navigate)
+- **swipe left** -> `back`
+- **long press** -> `long_click`
+
+Config options (in `[display]`):
+
+```ini
+touch: True
+touch_threshold: 250      # z above this = touching
+touch_swipe_min: 120      # raw movement to count as a swipe
+#touch_swap_xy: False
+#touch_invert_x: False
+#touch_invert_y: False
+#touch_long_ms: 700
+```
+
+Use `TFT_TOUCH_MON` to calibrate `touch_threshold` and the invert/swap options.
 
 ## Status / TODO
 
-- Text, colours, orientation and native Klipper glyph icons work.
-- The `[menu]` framework is loaded but needs touch input to navigate
-  (XPT2046 on SPI, PE/… — not done yet).
+- Text, colours, orientation, native icons and **touch menu navigation** work.
+- Icons are 16x16 Klipper glyphs drawn at one cell; making them larger and/or
+  loading them from the W25 flash is future work.
 - Some cheap panels show faint vertical lines on large uniform black areas
   (a panel/backlight artefact, not a driver bug).

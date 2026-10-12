@@ -328,8 +328,9 @@ screen and menus on the original screen.
 - Full build/install steps and the `TFT_*` diagnostic commands:
   **[mcu/README.md](mcu/README.md)**.
 
-> Touch navigation (XPT2046) is not implemented yet, so the screen shows the
-> status screen; the menus are loaded but not navigable.
+> Touch navigation (XPT2046) **works**: tap = select, swipe up/down = navigate,
+> swipe left = back (long press = long click). See
+> **[mcu/README.md](mcu/README.md)** for the calibration commands/options.
 
 ## Rebuild the firmware (optional)
 

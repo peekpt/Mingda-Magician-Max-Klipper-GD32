@@ -9,6 +9,9 @@ import logging
 
 TextGlyphs = {'right_arrow': b'\x1a', 'degrees': b'\xf8'}
 
+# Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
+ICON = 0x100
+
 # ST7796S init sequence (register, [data...]) - from Marlin st7796s.h
 INIT_SEQ = [
     (0xF0, [0xC3]), (0xF0, [0x96]),
@@ -46,6 +49,30 @@ class ST7796:
                                desc="Draw alternating vertical b/w stripes")
         gcode.register_command('TFT_FILLV', self.cmd_TFT_FILLV,
                                desc="Fill the TFT with a colour as vertical strips")
+        gcode.register_command('TFT_TOUCH', self.cmd_TFT_TOUCH,
+                               desc="Read the XPT2046 touch raw values")
+        gcode.register_command('TFT_TOUCH_DEBUG', self.cmd_TFT_TOUCH_DEBUG,
+                               desc="Toggle logging of touch raw values")
+        # Touch (XPT2046)
+        self.gcode = gcode
+        self.touch_enable = config.getboolean('touch', True)
+        self.touch_threshold = config.getint('touch_threshold', 200, minval=0)
+        self.touch_swap = config.getboolean('touch_swap_xy', False)
+        self.touch_inv_x = config.getboolean('touch_invert_x', False)
+        self.touch_inv_y = config.getboolean('touch_invert_y', False)
+        self.touch_swipe = config.getint('touch_swipe_min', 50, minval=1)
+        self.touch_long = config.getfloat('touch_long_ms', 700., above=0.) / 1000.
+        self.query_touch = None
+        self.menu = None
+        self.touch_debug = False
+        self._mon = None
+        gcode.register_command('TFT_TOUCH_MON', self.cmd_TFT_TOUCH_MON,
+                               desc="Sample touch raw values for T seconds")
+        self._touched = False
+        self._t0 = 0.
+        self._x0 = self._y0 = self._xl = self._yl = 0
+        self.touch_timer = self.printer.get_reactor().register_timer(
+            self._touch_event)
         self.cols = config.getint('cols', 20, minval=4, maxval=60)
         self.rows = config.getint('rows', 4, minval=1, maxval=20)
         self.scale = config.getint('scale', 3, minval=1, maxval=8)
@@ -61,7 +88,7 @@ class ST7796:
         self.cmd_cmd = self.cmd_data = self.cmd_rect = self.cmd_char = None
         self.cmd_icon = None
         self.enabled = False
-        self.cell_w = 8 * self.scale
+        self.cell_w = self.width // self.cols
         self.cell_h = self.height // self.rows
         self.vpad = max(0, (self.cell_h - 16 * self.scale) // 2)
         self.icons = {}
@@ -103,6 +130,16 @@ class ST7796:
                            minclock=c2)
         self.grid = [[ord(' ')] * self.cols for _ in range(self.rows)]
         self.shown = [[ord(' ')] * self.cols for _ in range(self.rows)]
+        if self.touch_enable:
+            try:
+                self.query_touch = self.mcu.lookup_query_command(
+                    "tft_touch",
+                    "tft_touch_result x=%hu y=%hu z=%hu xr=%hu yr=%hu")
+            except Exception:
+                self.query_touch = None
+                logging.info("st7796: touch query not available")
+            if self.query_touch is not None:
+                reactor.update_timer(self.touch_timer, reactor.NOW)
     def clear(self):
         self.grid = [[ord(' ')] * self.cols for _ in range(self.rows)]
     def flush(self):
@@ -113,7 +150,9 @@ class ST7796:
             srow = self.shown[r]
             for c in range(self.cols):
                 if grow[c] != srow[c]:
-                    self._draw_cell(c, r, grow[c])
+                    if grow[c] != ICON:
+                        self._draw_cell(c, r, grow[c])
+                    # else: icon already drawn by write_glyph this cycle
                     srow[c] = grow[c]
     def write_text(self, x, y, data):
         if y < 0 or y >= self.rows:
@@ -137,12 +176,16 @@ class ST7796:
                     row = (high[i] << 8) | low[i]
                     buf.append((row >> 8) & 0xFF)
                     buf.append(row & 0xFF)
-                size = self.cell_w
-                px = x * self.cell_w
+                size = min(self.cell_w, 16 * self.scale)
+                px = (x * self.cell_w
+                      + max(0, (self.cell_w - size) // 2))
                 py = (y * self.cell_h + self.vpad
                       + max(0, (16 * self.scale - size) // 2))
+                self._cover_cell(x, y)
                 self.cmd_icon.send([px, py, size, size, self.fg, self.bg,
                                     bytes(buf)])
+                if 0 <= y < self.rows and 0 <= x < self.cols:
+                    self.grid[y][x] = ICON
             else:
                 self.write_text(x, y, b' ')
             return 1
@@ -208,13 +251,107 @@ class ST7796:
         color = self._rgb565(r, g, b)
         for x in range(0, w, step):
             self.cmd_rect.send([x, 0, min(step, w - x), h, color])
+    # --- touch (XPT2046 -> Klipper menu gestures) ---
+    def _get_menu(self):
+        if self.menu is None:
+            disp = self.printer.lookup_object('display', None)
+            if disp is not None:
+                self.menu = getattr(disp, 'menu', None)
+        return self.menu
+    def _touch_event(self, eventtime):
+        try:
+            resp = self.query_touch.send([])
+        except Exception:
+            return eventtime + 0.1
+        x = resp.get('x', 0)
+        y = resp.get('y', 0)
+        z = resp.get('z', 0)
+        if self._mon is not None:
+            m = self._mon
+            m['zmin'] = min(m['zmin'], z)
+            if z >= 100:  # only sample x/y while actually touching
+                m['xmin'] = min(m['xmin'], x); m['xmax'] = max(m['xmax'], x)
+                m['ymin'] = min(m['ymin'], y); m['ymax'] = max(m['ymax'], y)
+                if z > m['zmax']:
+                    m['zmax'] = z; m['xz'] = x; m['yz'] = y
+            if eventtime >= m['end']:
+                self.gcode.respond_info(
+                    "touch mon: z %d..%d | x %d..%d | y %d..%d | at max z"
+                    " x=%d y=%d" % (m['zmin'], m['zmax'], m['xmin'],
+                                    m['xmax'], m['ymin'], m['ymax'],
+                                    m['xz'], m['yz']))
+                self._mon = None
+            return eventtime + 0.04
+        if z >= self.touch_threshold:
+            if self.touch_debug:
+                self.gcode.respond_info("touch raw x=%d y=%d z=%d" % (x, y, z))
+            if not self._touched:
+                self._touched = True
+                self._t0 = eventtime
+                self._x0, self._y0 = x, y
+            self._xl, self._yl = x, y
+        elif self._touched:
+            self._touched = False
+            self._handle_gesture(eventtime)
+        return eventtime + 0.04
+    def _handle_gesture(self, eventtime):
+        dt = eventtime - self._t0
+        dx = self._xl - self._x0
+        dy = self._yl - self._y0
+        if self.touch_swap:
+            dx, dy = dy, dx
+        if self.touch_inv_x:
+            dx = -dx
+        if self.touch_inv_y:
+            dy = -dy
+        sw = self.touch_swipe
+        key = None
+        if abs(dx) < sw and abs(dy) < sw:
+            key = 'long_click' if dt >= self.touch_long else 'click'
+        elif abs(dy) >= abs(dx):
+            if dy > 0:
+                key = 'fast_down' if abs(dy) > 2 * sw else 'down'
+            else:
+                key = 'fast_up' if abs(dy) > 2 * sw else 'up'
+        elif dx < 0:
+            key = 'back'
+        if key is None:
+            return
+        menu = self._get_menu()
+        if menu is not None:
+            logging.info("st7796: touch gesture -> %s", key)
+            menu.key_event(key, eventtime)
+    def cmd_TFT_TOUCH(self, gcmd):
+        if self.query_touch is None:
+            raise gcmd.error("st7796 touch not available")
+        r = self.query_touch.send([])
+        gcmd.respond_info("touch x=%d y=%d z=%d (raw xr=%d yr=%d)"
+                          % (r.get('x', 0), r.get('y', 0), r.get('z', 0),
+                             r.get('xr', 0), r.get('yr', 0)))
+    def cmd_TFT_TOUCH_DEBUG(self, gcmd):
+        self.touch_debug = not self.touch_debug
+        gcmd.respond_info("touch debug %s"
+                          % ("on" if self.touch_debug else "off"))
+    def cmd_TFT_TOUCH_MON(self, gcmd):
+        if self.query_touch is None:
+            raise gcmd.error("st7796 touch not available")
+        t = gcmd.get_float('T', 5., above=0.)
+        now = self.printer.get_reactor().monotonic()
+        self._mon = {'end': now + t, 'zmin': 9999, 'zmax': 0,
+                     'xmin': 9999, 'xmax': 0, 'ymin': 9999, 'ymax': 0,
+                     'xz': 0, 'yz': 0}
+        gcmd.respond_info("touch mon: sampling %.0fs - touch the screen now" % t)
     # --- helpers ---
     def _wcmd(self, v):
         self.cmd_cmd.send([v & 0xFF])
     def _wdata(self, v):
         self.cmd_data.send([v & 0xFFFF])
+    def _cover_cell(self, col, row):
+        self.cmd_rect.send([col * self.cell_w, row * self.cell_h,
+                            self.cell_w, self.cell_h, self.bg])
     def _draw_cell(self, col, row, ch):
-        x = col * self.cell_w
+        self._cover_cell(col, row)
+        x = col * self.cell_w + max(0, (self.cell_w - 8 * self.scale) // 2)
         y = row * self.cell_h + self.vpad
         self.cmd_char.send([x, y, self.scale, ch, self.fg, self.bg])
 
