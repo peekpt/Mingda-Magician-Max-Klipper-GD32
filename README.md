@@ -307,6 +307,30 @@ sudo systemctl enable --now printer-startup-tune.service printer-shutdown-tune.s
 | No buzzer sounds | Check the **Sound** switch / run `SOUND_ON` |
 | No sound on shutdown | Must be a graceful Pi shutdown (section 8) |
 
+## 10. Stock TFT display (experimental)
+
+The stock **480x320 ST7796** panel (16-bit FSMC/8080 parallel, wired to the MCU)
+can be driven by Klipper with a small custom driver, showing the Klipper status
+screen and menus on the original screen.
+
+- MCU: `mcu/fsmc_tft.c` + `mcu/font8x14.h` (injected automatically by
+  `build_klipper_fw.sh`).
+- Host: `mcu/st7796.py` — a Klipper display chip.
+- Config:
+  ```ini
+  [display]
+  lcd_type: st7796
+  scale: 3
+  cols: 20
+  rows: 4
+  madctl: 0xE8     # MV|MX|MY|BGR for this panel
+  ```
+- Full build/install steps and the `TFT_*` diagnostic commands:
+  **[mcu/README.md](mcu/README.md)**.
+
+> Touch navigation (XPT2046) is not implemented yet, so the screen shows the
+> status screen; the menus are loaded but not navigable.
+
 ## Rebuild the firmware (optional)
 
 Clone the Klipper source **as a sibling of this folder** (so it lands in

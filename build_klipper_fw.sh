@@ -51,6 +51,15 @@ fi
 
 cd "$KLIPPER_DIR"
 
+# --- Inject the custom FSMC TFT driver (stock screen support) ----------------
+if [ -d ../klipper_printer/mcu ]; then
+    echo "Injecting FSMC TFT display driver ..."
+    cp ../klipper_printer/mcu/fsmc_tft.c src/stm32/fsmc_tft.c
+    cp ../klipper_printer/mcu/font8x14.h src/stm32/font8x14.h
+    grep -q 'stm32/fsmc_tft.c' src/stm32/Makefile \
+        || echo 'src-$(CONFIG_MACH_STM32F4) += stm32/fsmc_tft.c' >> src/stm32/Makefile
+fi
+
 # --- Write the firmware configuration ---------------------------------------
 cat > .config <<'EOF'
 CONFIG_LOW_LEVEL_OPTIONS=y
