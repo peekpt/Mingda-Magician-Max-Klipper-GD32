@@ -1267,16 +1267,15 @@ class ST7796:
         speed = float(gm.get('speed_factor') or 1.) * 100.
         flow = float(gm.get('extrude_factor') or 1.) * 100.
         fansp = float(fn.get('speed') or 0.) * 100.
-        # Info panel: rounded coloured outline filled with the screen colour,
-        # holding a 2x4 grid of small coloured icons with the value underneath.
+        # Info panel: 2x4 grid of small coloured icons with the value below.
+        # No background/outline fill (that flickered) and the progress bar is
+        # drawn as text blocks - far fewer MCU commands.
         px0, py0 = self.RAIL_W + 2, self.TOP_H + 2
         pw = 2 * bw - 4
         ph = self.height - self.STRIP_H - self.TOP_H - 4
-        ops.append(lambda px0=px0, py0=py0, pw=pw, ph=ph:
-                   self._gui_round(px0, py0, pw, ph, COL_C1))
-        ops.append(lambda px0=px0, py0=py0, pw=pw, ph=ph:
-                   self._gui_round(px0 + 2, py0 + 2, pw - 4, ph - 4, COL_BG))
-        cw, ch = pw // 2, ph // 4
+        bar_h = 24
+        ch = (ph - bar_h) // 4
+        cw = pw // 2
         cards = [
             ('fire', "%d/%d" % (ex['temperature'], ex['target']),
              self._temp_color(ex['temperature'], ex['target'])),
@@ -1289,9 +1288,20 @@ class ST7796:
             ('print', "%d%%" % int(round(prog * 100)), COL_WHITE),
         ]
         for i, (icon, val, col) in enumerate(cards):
-            cx = px0 + 2 + (i % 2) * cw
-            cy = py0 + 2 + (i // 2) * ch
+            cx = px0 + (i % 2) * cw
+            cy = py0 + (i // 2) * ch
             self._card_ops(ops, cx, cy, cw, ch, icon, val, col)
+        # Progress bar as text: full blocks then light-shade blocks.
+        n = max(4, pw // 8)
+        f = int(round(prog * n))
+        bx = px0 + (pw - n * 8) // 2
+        by = py0 + 4 * ch + 4
+        if f > 0:
+            ops.append(lambda bx=bx, by=by, f=f: self._gui_text(
+                bx, by, "\xdb" * f, COL_C1, COL_BG, 1))
+        if n - f > 0:
+            ops.append(lambda bx=bx, by=by, f=f, n=n: self._gui_text(
+                bx + f * 8, by, "\xb0" * (n - f), COL_ACTIVE, COL_BG, 1))
         # Right hand buttons: pause/resume, cancel, tune, temperatures
         paused = ps['state'] == 'paused'
         for (x, y, w, h, idx) in self._print_btns():
