@@ -1228,15 +1228,22 @@ class ST7796:
             vw = len(val) * 8
             ops.append(lambda xr=xr, y=y, val=val, vw=vw, col=col:
                        self._gui_text(xr - vw, y + 9, val, col, COL_BG, 1))
+    def _card_ops(self, ops, cx, cy, cw, ch, icon, val, col):
+        # Small coloured icon with the value underneath (no label).
+        sc = self._icon_at(icon, 22)
+        iw = sc[0] if sc else 0
+        ops.append(lambda cx=cx, cy=cy, cw=cw, icon=icon, iw=iw, col=col:
+                   self._gui_icon_at(icon, cx + (cw - iw) // 2, cy + 5, col,
+                                     COL_BG, 22))
+        if val:
+            ops.append(lambda cx=cx, cy=cy, cw=cw, val=val, col=col:
+                       self._gui_text_center(cx, cw, cy + ch - 21, val, col,
+                                             COL_BG, 1))
     def _print_view_ops(self, ops, eventtime):
         ps = self._print_status(eventtime)
         if ps is None:
             return
         bw = (self.width - self.RAIL_W) // 4
-        ix0 = self.RAIL_W + 2
-        ix1 = self.RAIL_W + 2 * bw - 6
-        iy0 = self.TOP_H
-        iy1 = self.height - self.STRIP_H
         try:
             ex = self.printer.lookup_object('extruder').get_status(eventtime)
             bd = self.printer.lookup_object('heater_bed').get_status(eventtime)
@@ -1260,29 +1267,31 @@ class ST7796:
         speed = float(gm.get('speed_factor') or 1.) * 100.
         flow = float(gm.get('extrude_factor') or 1.) * 100.
         fansp = float(fn.get('speed') or 0.) * 100.
-        zm = self._zmax()
-        lines = [
-            ("Bico", "%d/%d" % (ex['temperature'], ex['target']),
+        # Info panel: rounded coloured outline filled with the screen colour,
+        # holding a 2x4 grid of small coloured icons with the value underneath.
+        px0, py0 = self.RAIL_W + 2, self.TOP_H + 2
+        pw = 2 * bw - 4
+        ph = self.height - self.STRIP_H - self.TOP_H - 4
+        ops.append(lambda px0=px0, py0=py0, pw=pw, ph=ph:
+                   self._gui_round(px0, py0, pw, ph, COL_C1))
+        ops.append(lambda px0=px0, py0=py0, pw=pw, ph=ph:
+                   self._gui_round(px0 + 2, py0 + 2, pw - 4, ph - 4, COL_BG))
+        cw, ch = pw // 2, ph // 4
+        cards = [
+            ('fire', "%d/%d" % (ex['temperature'], ex['target']),
              self._temp_color(ex['temperature'], ex['target'])),
-            ("Cama", "%d/%d" % (bd['temperature'], bd['target']),
+            ('bed', "%d/%d" % (bd['temperature'], bd['target']),
              self._temp_color(bd['temperature'], bd['target'])),
-            ("Fan", "%d%%" % int(round(fansp)), COL_C3),
-            ("Flow", "%d%%" % int(round(flow)), COL_C4),
-            ("Speed", "%d%%" % int(round(speed)), COL_C2),
-            ("Z", "%.1f/%.0f   %d%%" % (zc, zm, int(prog * 100)), COL_C1),
+            ('fan', "%d%%" % int(round(fansp)), COL_C3),
+            ('extrude', "%d%%" % int(round(flow)), COL_C4),
+            ('speed', "%d%%" % int(round(speed)), COL_C2),
+            ('zoffset', "%.1f/%.0f" % (zc, self._zmax()), COL_C1),
+            ('print', "%d%%" % int(round(prog * 100)), COL_WHITE),
         ]
-        line_h = max(26, (iy1 - iy0 - 30) // max(1, len(lines)))
-        for i, (lab, val, col) in enumerate(lines):
-            self._info_line(ops, ix0, iy0 + i * line_h, ix1, lab, val, col)
-        # Thin progress line under the list
-        py = iy0 + len(lines) * line_h + 4
-        pw = ix1 - ix0
-        ops.append(lambda py=py, pw=pw: self.cmd_rect.send(
-            [ix0, py, pw, 6, self.gui_btn_bg]))
-        fw = int(pw * prog)
-        if fw > 0:
-            ops.append(lambda py=py, fw=fw: self.cmd_rect.send(
-                [ix0, py, fw, 6, COL_C1]))
+        for i, (icon, val, col) in enumerate(cards):
+            cx = px0 + 2 + (i % 2) * cw
+            cy = py0 + 2 + (i // 2) * ch
+            self._card_ops(ops, cx, cy, cw, ch, icon, val, col)
         # Right hand buttons: pause/resume, cancel, tune, temperatures
         paused = ps['state'] == 'paused'
         for (x, y, w, h, idx) in self._print_btns():
