@@ -33,11 +33,16 @@ COL_OK     = 0x2DE9   # #2DBF4A  green   -> at/over the target (-3C)
 COL_COOL   = 0x2DBE   # #29B6F6  blue    -> cooling (target 0)
 COL_DIM    = 0x39E7   # #3A3A3A  grey    -> disabled rail icons
 
-# Accent colours for the button underlines (cycles over the 8 grid buttons)
-GUI_COLORS = (0xFF00,   # yellow        #FFE300
-              0xF800,   # red           #FF0000
-              0x2BDF,   # blue          #2979FF
-              0xDEDC)   # light grey    #D8DCE0
+# Accent colours for the button underlines: the 4 theme accents plus 4 more, so
+# each of the 8 grid buttons gets its own colour.
+GUI_COLORS = (COL_C1,   # orange   #ED6500
+              COL_C2,   # magenta  #B10080
+              COL_C3,   # teal     #009384
+              COL_C4,   # lime     #A7E100
+              0xFF00,   # yellow   #FFE300
+              0xF800,   # red      #FF0000
+              0x2BDF,   # blue     #2979FF
+              0xDEDC)   # light grey / near white #D8DCE0
 
 # Panels: list of (label, icon, action). action is gcode, or ('scr', name),
 # ('mv', axis, sign), or None.
