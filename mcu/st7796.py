@@ -11,6 +11,8 @@ import os
 import re
 import socket
 import subprocess
+import threading
+import urllib.request
 from . import tft_icons
 
 TextGlyphs = {'right_arrow': b'\x1a', 'degrees': b'\xf8'}
@@ -90,6 +92,15 @@ GUI_SCREENS = {
     'print': [],
     'ptune': [],
     'ptemp': [],
+    'estop': [],
+    'power': [
+        ("Emergency", "alert", ('scr', 'estop')),
+        ("Klipper", "refresh", 'RESTART'),
+        ("Firmware", "console", 'FIRMWARE_RESTART'),
+        ("Reboot", "power", ('host', 'reboot')),
+        ("Desligar", "power", ('host', 'shutdown')),
+        ("Voltar", "back", ('scr', 'main')),
+    ],
     'network': [],
     'more': [
         ("PID hot", "fire", 'PID_CALIBRATE HEATER=extruder TARGET=200'),
@@ -937,7 +948,7 @@ class ST7796:
         back = ('scr', 'print') if self.gui_screen in ('ptune', 'ptemp') \
             else ('scr', 'main')
         items = [('back24', back), ('home24', ('scr', 'main')),
-                 ('files24', ('scr', 'print')), ('alert24', ('estop',))]
+                 ('files24', ('scr', 'print')), ('alert24', ('scr', 'power'))]
         n = len(items)
         area = self.height - self.STRIP_H - self.TOP_H
         step = min(56, (area - 40) // max(1, n - 1))
@@ -1358,8 +1369,11 @@ class ST7796:
                                                self.gui_bar_bg]))
         for (x, y, name, action, dim) in self._gui_rail():
             col = COL_DIM if dim else COL_WHITE
-            if isinstance(action, tuple) and action[0] == 'estop':
-                col = COL_ERR                 # emergency stop: always red
+            if isinstance(action, tuple) and (action[0] == 'estop' or
+                                              action[0] == 'host' or
+                                              action == ('scr', 'power') or
+                                              action == ('scr', 'estop')):
+                col = COL_ERR                 # power menu: always red
             ops.append(lambda x=x, y=y, name=name, col=col: self._gui_icon_at(
                 name, x, y, col, self.gui_bar_bg, 24))
         if self.gui_screen == 'print':
@@ -1373,6 +1387,8 @@ class ST7796:
             self._ptune_view_ops(ops, eventtime)
         elif self.gui_screen == 'ptemp':
             self._ptemp_view_ops(ops, eventtime)
+        elif self.gui_screen == 'estop':
+            self._estop_view_ops(ops, eventtime)
         g = self.gui_btn_gap
         i2 = g // 2
         for (x, y, w, h, idx, item) in self._gui_buttons():
@@ -1700,6 +1716,42 @@ class ST7796:
                 self._btn_ops(ops, x, y, w, h, 'fire', "Bico +")
             elif idx == 7:
                 self._btn_ops(ops, x, y, w, h, 'fire', "Bico -")
+    def _big_btn(self, ops, x, y, w, h, label, bg, fg):
+        ops.append(lambda x=x, y=y, w=w, h=h, bg=bg: self._gui_round(
+            x, y, w, h, bg))
+        tw = len(label) * 32
+        tx = x + max(0, (w - tw) // 2)
+        ty = y + max(0, (h - 64) // 2)
+        ops.append(lambda tx=tx, ty=ty, label=label, bg=bg, fg=fg:
+                   self._gui_text(tx, ty, label, fg, bg, 4))
+    def _estop_btns(self):
+        bw = (self.width - self.RAIL_W) // 4
+        y = self.TOP_H + 104
+        h = self.height - self.STRIP_H - y - 8
+        return [(self.RAIL_W + 6, y, 2 * bw - 12, h, 'no'),
+                (self.RAIL_W + 2 * bw + 6, y, 2 * bw - 12, h, 'yes')]
+    def _estop_view_ops(self, ops, eventtime):
+        ops.append(lambda: self._gui_text_center(
+            0, self.width, self.TOP_H + 26, "CONFIRMAR?", COL_WARN, COL_BG, 3))
+        for (x, y, w, h, kind) in self._estop_btns():
+            if kind == 'yes':
+                self._big_btn(ops, x, y, w, h, "SIM", COL_ERR, COL_WHITE)
+            else:
+                self._big_btn(ops, x, y, w, h, "NAO", self.gui_btn_bg,
+                              COL_WHITE)
+    def _host_power(self, what):
+        # Runs in a worker thread: ask Moonraker (it holds the privileges).
+        try:
+            req = urllib.request.Request(
+                'http://127.0.0.1:7125/machine/%s' % what, data=b'',
+                method='POST')
+            with urllib.request.urlopen(req, timeout=8) as r:
+                r.read()
+            logging.info("st7796: host %s ok", what)
+            return True
+        except Exception:
+            logging.exception("st7796: host %s failed", what)
+            return False
     def _gui_do(self, action, eventtime):
         script = None
         if isinstance(action, tuple) and action[0] == 'scr':
@@ -1717,14 +1769,33 @@ class ST7796:
             self._ext_step = self._ext_steps[(i + 1) % len(self._ext_steps)]
             self._gui_render(eventtime)
         elif isinstance(action, tuple) and action[0] == 'estop':
-            self.gcode.respond_info("GUI: EMERGENCY STOP (M112)")
-            try:
+            if action[1] == 'yes':
+                self.gcode.respond_info("GUI: EMERGENCY STOP (M112)")
                 self._gui_msg = "EMERGENCY STOP !"
                 self._gui_msg_until = (
                     self.printer.get_reactor().monotonic() + 6.)
+                script = 'M112'
+            else:
+                self.gui_screen = 'power'
+                self._gui_render(eventtime)
+                return
+        elif isinstance(action, tuple) and action[0] == 'host':
+            what = 'reboot' if action[1] == 'reboot' else 'shutdown'
+            self.gcode.respond_info("GUI: host %s" % what)
+            try:
+                self._gui_msg = ("A reiniciar o host..." if what == 'reboot'
+                                 else "A desligar o host...")
+                self._gui_msg_until = (
+                    self.printer.get_reactor().monotonic() + 15.)
             except Exception:
                 pass
-            script = 'M112'
+            self._gui_next = 0.
+            try:
+                threading.Thread(target=self._host_power, args=(what,),
+                                 daemon=True).start()
+            except Exception:
+                logging.exception("st7796: host %s thread failed", what)
+            return
         elif isinstance(action, tuple) and action[0] == 'ptv':
             i = self._PTUNE.index(self._ptune)
             self._ptune = self._PTUNE[(i + 1) % len(self._PTUNE)]
@@ -1813,6 +1884,12 @@ class ST7796:
                     self._gui_run_action(
                         "M300 S1000 P60" if self.gui_beep else None)
                 return
+        if self.gui_screen == 'estop':
+            for (x, y, w, h, kind) in self._estop_btns():
+                if x <= sx < x + w and y <= sy < y + h:
+                    self.gcode.respond_info("GUI: %s" % kind)
+                    self._gui_do(('estop', kind), eventtime)
+                    return
         if self.gui_screen in ('ptune', 'ptemp'):
             for (x, y, w, h, idx, item) in self._gui_buttons():
                 if x <= sx < x + w and y <= sy < y + h:
