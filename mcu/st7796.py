@@ -94,7 +94,7 @@ GUI_SCREENS = {
     'ptemp': [],
     'estop': [],
     'power': [
-        ("Emergency", "alert", ('scr', 'estop')),
+        ("Emergency", "alert", 'M112'),
         ("Klipper", "refresh", 'RESTART'),
         ("Firmware", "console", 'FIRMWARE_RESTART'),
         ("Reboot", "power", ('host', 'reboot')),
@@ -1185,10 +1185,18 @@ class ST7796:
                        self._gui_text(rx + 12, ry + 2, name[:44], COL_WHITE,
                                       bg, 1))
         for (bx, by, bw, bh, kind) in self._list_btns():
+            isz = 44
             ops.append(lambda bx=bx, by=by, bw=bw, bh=bh:
                        self._gui_round(bx, by, bw, bh, self.gui_btn_bg))
-            ops.append(lambda bx=bx, by=by, kind=kind:
-                       self._gui_icon(kind, bx, by, COL_WHITE, self.gui_btn_bg))
+            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, kind=kind, isz=isz:
+                       self._gui_icon_at(kind, bx + (bw - isz) // 2,
+                                         by + (bh - isz) // 2, COL_WHITE,
+                                         self.gui_btn_bg, isz))
+            if kind == 'print':
+                # green accent line under the print button
+                ops.append(lambda bx=bx, by=by, bw=bw, bh=bh:
+                           self.cmd_rect.send([bx + 10, by + bh - 9, bw - 20,
+                                               4, COL_OK]))
     def _list_press(self, kind, eventtime):
         if kind == 'up':
             self._sd_sel = max(0, self._sd_sel - 1)
@@ -1534,7 +1542,7 @@ class ST7796:
             s = max(0., min(1., s + sign * 0.2))
             return "M106 S%d" % int(round(s * 255))
         if what == 'flow':
-            f = float(gm.get('extrude_factor') or 1.) + sign * 0.05
+            f = float(gm.get('extrude_factor') or 1.) + sign * 0.01
             return "M221 S%d" % int(round(max(0.5, min(2.0, f)) * 100))
         if what == 'speed':
             f = float(gm.get('speed_factor') or 1.) + sign * 0.05
