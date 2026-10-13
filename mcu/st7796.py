@@ -259,6 +259,7 @@ class ST7796:
         self._net_cache = None
         self._net_t = 0.
         self._ptune = 'flow'
+        self._card_cols = {}
         self._corners = (_make_corner(self.gui_radius, False, False),
                          _make_corner(self.gui_radius, True, False),
                          _make_corner(self.gui_radius, False, True),
@@ -999,9 +1000,10 @@ class ST7796:
                 return
             self._gui_heater('nozzle', 9, 34, nb)
             self._gui_heater('bed', 7, 120, bd)
-        self._gui_text_center(0, self.width, 7,
-                              (self.gui_screen.capitalize() + ' ' * 14)[:14],
-                              COL_WHITE, bg, 1)
+        if self.gui_screen != 'print':
+            self._gui_text_center(0, self.width, 7,
+                                  (self.gui_screen.capitalize()
+                                   + ' ' * 14)[:14], COL_WHITE, bg, 1)
         try:
             dur = int(self.printer.lookup_object('print_stats').get_status(
                 eventtime)['print_duration'])
@@ -1075,7 +1077,7 @@ class ST7796:
                 and self._print_view(eventtime)):
             # Refresh just the info panel (icons/values), not the whole screen.
             pop = []
-            self._print_view_ops(pop, eventtime)
+            self._print_view_ops(pop, eventtime, values_only=True)
             self._gui_enqueue(pop)
             return
         self._gui_enqueue([lambda et=eventtime: self._gui_topbar(et, False),
@@ -1249,19 +1251,20 @@ class ST7796:
             vw = len(val) * 8
             ops.append(lambda xr=xr, y=y, val=val, vw=vw, col=col:
                        self._gui_text(xr - vw, y + 9, val, col, COL_BG, 1))
-    def _card_ops(self, ops, cx, cy, cw, ch, icon, val, col):
-        # Small coloured icon with the value underneath (no label).
-        sc = self._icon_at(icon, 22)
-        iw = sc[0] if sc else 0
-        ops.append(lambda cx=cx, cy=cy, cw=cw, icon=icon, iw=iw, col=col:
-                   self._gui_icon_at(icon, cx + (cw - iw) // 2, cy + 5, col,
-                                     COL_BG, 22))
+    def _card_ops(self, ops, cx, cy, cw, ch, icon, val, col, draw_icon=True):
+        # Small coloured icon with the value centred underneath (no label).
+        if draw_icon:
+            sc = self._icon_at(icon, 22)
+            iw = sc[0] if sc else 0
+            ops.append(lambda cx=cx, cy=cy, cw=cw, icon=icon, iw=iw, col=col:
+                       self._gui_icon_at(icon, cx + (cw - iw) // 2, cy + 5,
+                                         col, COL_BG, 22))
         if val:
             ops.append(lambda cx=cx, cy=cy, cw=cw, val=val, col=col:
                        self._gui_text_center(cx, cw, cy + ch - 21,
-                                             (val + ' ' * 9)[:9], col,
-                                             COL_BG, 1))
-    def _print_view_ops(self, ops, eventtime):
+                                             str(val).center(9), col, COL_BG,
+                                             1))
+    def _print_view_ops(self, ops, eventtime, values_only=False):
         ps = self._print_status(eventtime)
         if ps is None:
             return
@@ -1312,7 +1315,9 @@ class ST7796:
         for i, (icon, val, col) in enumerate(cards):
             cx = px0 + (i % 2) * cw
             cy = py0 + (i // 2) * ch
-            self._card_ops(ops, cx, cy, cw, ch, icon, val, col)
+            draw = (not values_only) or (self._card_cols.get(i) != col)
+            self._card_cols[i] = col
+            self._card_ops(ops, cx, cy, cw, ch, icon, val, col, draw)
         # Progress bar as text: full blocks then light-shade blocks.
         n = max(4, pw // 8)
         f = int(round(prog * n))
