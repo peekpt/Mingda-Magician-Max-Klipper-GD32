@@ -1271,16 +1271,21 @@ class ST7796:
             ops.append(lambda xr=xr, y=y, val=val, vw=vw, col=col:
                        self._gui_text(xr - vw, y + 9, val, col, COL_BG, 1))
     def _card_ops(self, ops, cx, cy, cw, ch, icon, val, col, draw_icon=True):
-        # Small coloured icon with the value centred underneath (no label).
+        # Small coloured icon, the value centred underneath and a coloured
+        # accent line - same style as the menu buttons.
+        top = cy + max(0, (ch - 50) // 2)
         if draw_icon:
             sc = self._icon_at(icon, 22)
             iw = sc[0] if sc else 0
-            ops.append(lambda cx=cx, cy=cy, cw=cw, icon=icon, iw=iw, col=col:
-                       self._gui_icon_at(icon, cx + (cw - iw) // 2, cy + 5,
-                                         col, COL_BG, 22))
+            ops.append(lambda cx=cx, top=top, cw=cw, icon=icon, iw=iw, col=col:
+                       self._gui_icon_at(icon, cx + (cw - iw) // 2, top, col,
+                                         COL_BG, 22))
+            ops.append(lambda cx=cx, top=top, cw=cw, col=col:
+                       self.cmd_rect.send([cx + (cw - 44) // 2, top + 46, 44, 3,
+                                           col]))
         if val:
-            ops.append(lambda cx=cx, cy=cy, cw=cw, val=val, col=col:
-                       self._gui_text_center(cx, cw, cy + ch - 21,
+            ops.append(lambda cx=cx, top=top, cw=cw, val=val, col=col:
+                       self._gui_text_center(cx, cw, top + 26,
                                              str(val).center(9), col, COL_BG,
                                              1))
     def _print_view_ops(self, ops, eventtime, values_only=False):
