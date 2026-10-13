@@ -937,7 +937,7 @@ class ST7796:
         back = ('scr', 'print') if self.gui_screen in ('ptune', 'ptemp') \
             else ('scr', 'main')
         items = [('back24', back), ('home24', ('scr', 'main')),
-                 ('files24', ('scr', 'print')), ('alert24', None)]
+                 ('files24', ('scr', 'print')), ('alert24', ('estop',))]
         n = len(items)
         area = self.height - self.STRIP_H - self.TOP_H
         step = min(56, (area - 40) // max(1, n - 1))
@@ -1357,8 +1357,11 @@ class ST7796:
                                                self.height - self.TOP_H,
                                                self.gui_bar_bg]))
         for (x, y, name, action, dim) in self._gui_rail():
-            ops.append(lambda x=x, y=y, name=name, dim=dim: self._gui_icon_at(
-                name, x, y, COL_DIM if dim else COL_WHITE, self.gui_bar_bg, 24))
+            col = COL_DIM if dim else COL_WHITE
+            if isinstance(action, tuple) and action[0] == 'estop':
+                col = COL_ERR                 # emergency stop: always red
+            ops.append(lambda x=x, y=y, name=name, col=col: self._gui_icon_at(
+                name, x, y, col, self.gui_bar_bg, 24))
         if self.gui_screen == 'print':
             if self._print_view(eventtime):
                 self._print_view_ops(ops, eventtime)
@@ -1713,6 +1716,15 @@ class ST7796:
             i = self._ext_steps.index(self._ext_step)
             self._ext_step = self._ext_steps[(i + 1) % len(self._ext_steps)]
             self._gui_render(eventtime)
+        elif isinstance(action, tuple) and action[0] == 'estop':
+            self.gcode.respond_info("GUI: EMERGENCY STOP (M112)")
+            try:
+                self._gui_msg = "EMERGENCY STOP !"
+                self._gui_msg_until = (
+                    self.printer.get_reactor().monotonic() + 6.)
+            except Exception:
+                pass
+            script = 'M112'
         elif isinstance(action, tuple) and action[0] == 'ptv':
             i = self._PTUNE.index(self._ptune)
             self._ptune = self._PTUNE[(i + 1) % len(self._PTUNE)]
