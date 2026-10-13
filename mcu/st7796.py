@@ -6,6 +6,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
+import re
 from . import tft_icons
 
 TextGlyphs = {'right_arrow': b'\x1a', 'degrees': b'\xf8'}
@@ -59,11 +60,11 @@ GUI_SCREENS = {
     'extrude': [
         ("Carregar", "load", 'LOAD_FILAMENT'),
         ("Descarga", "unload", 'UNLOAD_FILAMENT'),
-        ("E +10", "eup", 'G91\nG1 E10 F300\nG90'),
-        ("E -10", "edown", 'G91\nG1 E-10 F300\nG90'),
+        ("E +", "edown", ('ex', 1)),
+        ("E -", "eup", ('ex', -1)),
         ("Bico 200", "fire", 'M104 S200'),
         ("Bico 240", "fire", 'M104 S240'),
-        ("", "", None),
+        ("E 1mm", "extrude", ('ext',)),
         ("Voltar", "back", ('scr', 'main')),
     ],
     'probe': [
@@ -92,7 +93,7 @@ GUI_SCREENS = {
         ("Guardar", "save", 'SAVE_CONFIG'),
         ("Fan 100", "fan", 'M106 S255'),
         ("Fan 0", "fan", 'M106 S0'),
-        ("Info", "info", 'M117 Klipper'),
+        ("Beep", "alert", ('beep',)),
         ("Reiniciar", "refresh", 'RESTART'),
         ("Voltar", "back", ('scr', 'main')),
     ],
@@ -166,6 +167,12 @@ class ST7796:
                                desc="Read the XPT2046 touch raw values")
         gcode.register_command('TFT_TOUCH_DEBUG', self.cmd_TFT_TOUCH_DEBUG,
                                desc="Toggle logging of touch raw values")
+        gcode.register_command('TFT_PANEL', self.cmd_TFT_PANEL,
+                               desc="Write ST7796 registers live (DIC/VCOM/INVON)")
+        gcode.register_command('TFT_SPLIT', self.cmd_TFT_SPLIT,
+                               desc="Compare big-rect vs narrow-strip fills")
+        gcode.register_command('TFT_GUI', self.cmd_TFT_GUI,
+                               desc="Force a full GUI redraw")
         # Touch (XPT2046)
         self.gcode = gcode
         self.touch_enable = config.getboolean('touch', True)
@@ -197,6 +204,16 @@ class ST7796:
         self.gui_screen = 'main'
         self._gui_steps = (0.1, 0.5, 1.0, 5.0, 10.0, 25.0, 50.0)
         self._gui_step = 1.0
+        self._ext_steps = (1.0, 5.0, 10.0)
+        self._ext_step = 1.0
+        self.gui_beep = config.getboolean('gui_beep', True)
+        # Refuse filament moves below this nozzle temperature (0 disables).
+        self.extrude_min_temp = config.getfloat('extrude_min_temp', 180.,
+                                                minval=0.)
+        self._gui_msg = None
+        self._gui_msg_until = 0.
+        self._gui_action_active = False
+        self._gui_ops = None
         self.cmd_bmp = None
         self.cmd_rrect = None
         self._gui_next = 0.
@@ -229,7 +246,7 @@ class ST7796:
         self.madctl = int(config.get('madctl', '0x28'), 0) & 0xFF
         # Panel tuning (sent by the host, so no reflash needed to experiment)
         self.init_invert = config.getboolean('init_invert', False)
-        self.init_dic = int(config.get('init_dic', '0x01'), 0) & 0xFF
+        self.init_dic = int(config.get('init_dic', '0x00'), 0) & 0xFF
         self.init_vcom = int(config.get('init_vcom', '0x22'), 0) & 0xFF
         self.init_vcomofs = int(config.get('init_vcomofs', '0x00'), 0) & 0xFF
         self.init_gamma = config.getboolean('init_gamma', True)
@@ -399,8 +416,12 @@ class ST7796:
         r = gcmd.get_int('R', 0, minval=0, maxval=255)
         g = gcmd.get_int('G', 0, minval=0, maxval=255)
         b = gcmd.get_int('B', 0, minval=0, maxval=255)
-        self.cmd_rect.send([0, 0, self.width, self.height,
-                            self._rgb565(r, g, b)])
+        color = self._rgb565(r, g, b)
+        self.cmd_rect.send([0, 0, self.width, self.height, color])
+        msg = gcmd.get('MSG', '')
+        if msg:
+            self._gui_text_center(0, self.width, self.height // 2, msg[:56],
+                                  0xFFFF, color, 1)
     def cmd_TFT_TEST(self, gcmd):
         if not self.enabled:
             raise gcmd.error("st7796 display not enabled")
@@ -448,6 +469,53 @@ class ST7796:
         color = self._rgb565(r, g, b)
         for x in range(0, w, step):
             self.cmd_rect.send([x, 0, min(step, w - x), h, color])
+    # --- panel/scan-line diagnostics (host only, no reflash) ---
+    def cmd_TFT_PANEL(self, gcmd):
+        # Write ST7796 display registers live, to hunt panel banding/stripes.
+        if not self.enabled:
+            raise gcmd.error("st7796 display not enabled")
+        out = []
+        dic = gcmd.get_int('DIC', None)
+        if dic is not None:
+            self.cmd_cmd.send([0xB4])
+            self.cmd_data.send([dic & 0xFF])
+            out.append("DIC=0x%02X" % (dic & 0xFF))
+        vcom = gcmd.get_int('VCOM', None)
+        if vcom is not None:
+            self.cmd_cmd.send([0xC5])
+            self.cmd_data.send([vcom & 0xFF])
+            out.append("VCOM=0x%02X" % (vcom & 0xFF))
+        ofs = gcmd.get_int('VCOM_OFS', None)
+        if ofs is not None:
+            self.cmd_cmd.send([0xC6])
+            self.cmd_data.send([ofs & 0xFF])
+            out.append("VCM_OFS=0x%02X" % (ofs & 0xFF))
+        invon = gcmd.get_int('INVON', None)
+        if invon is not None:
+            self.cmd_cmd.send([0x21 if invon else 0x20])
+            out.append("INVON=%d" % (1 if invon else 0))
+        gcmd.respond_info("tft panel: " + (", ".join(out) if out else "no change"))
+    def cmd_TFT_SPLIT(self, gcmd):
+        # Left half = one big rect, right half = many narrow rects, same colour.
+        # If only the left half shows the lines, the fill method is to blame;
+        # if both do, it is the panel.
+        if not self.enabled:
+            raise gcmd.error("st7796 display not enabled")
+        c = gcmd.get_int('C', 0x1418, minval=0, maxval=0xFFFF)
+        w = gcmd.get_int('W', 1, minval=1, maxval=self.width)
+        self.cmd_rect.send([0, 0, self.width, self.height, 0x0000])
+        half = self.width // 2
+        self.cmd_rect.send([0, 0, half, self.height, c])
+        x = half
+        while x < self.width:
+            n = min(w, self.width - x)
+            self.cmd_rect.send([x, 0, n, self.height, c])
+            x += n
+        self._gui_text(6, 6, "1 RECT", 0xFFFF, c)
+        self._gui_text(half + 6, 6, "STRIPS W=%d" % w, 0xFFFF, c)
+    def cmd_TFT_GUI(self, gcmd):
+        if self.gui:
+            self._gui_pending = self.printer.get_reactor().monotonic()
     # --- touch (XPT2046 -> Klipper menu gestures) ---
     def _get_menu(self):
         if self.menu is None:
@@ -456,6 +524,9 @@ class ST7796:
                 self.menu = getattr(disp, 'menu', None)
         return self.menu
     def _touch_event(self, eventtime):
+        if self.gui and self._disp_quiet(eventtime):
+            # Printer is homing/moving: keep the serial link completely clear.
+            return eventtime + 0.1
         if self._gui_pending is not None:
             if eventtime >= self._gui_pending:
                 self._gui_pending = None
@@ -647,11 +718,11 @@ class ST7796:
             bd = self.printer.lookup_object('heater_bed').get_status(eventtime)
         except Exception:
             return
-        self._gui_icon('nozzle20', 6, 5, self._gc(0), self.gui_bar_bg)
-        self._gui_text(30, 7, "%d" % nb['temperature'], COL_WHITE,
+        self._gui_icon('nozzle20', 6, 9, self._gc(0), self.gui_bar_bg)
+        self._gui_text(38, 7, "%d" % nb['temperature'], COL_WHITE,
                        self.gui_bar_bg, 1)
-        self._gui_icon('bed20', 92, 5, COL_C2, self.gui_bar_bg)
-        self._gui_text(116, 7, "%d" % bd['temperature'], COL_WHITE,
+        self._gui_icon('bed20', 104, 7, COL_C2, self.gui_bar_bg)
+        self._gui_text(136, 7, "%d" % bd['temperature'], COL_WHITE,
                        self.gui_bar_bg, 1)
         title = "Klipper | " + self.gui_screen.capitalize()
         self._gui_text_center(0, self.width, 7, title, COL_WHITE,
@@ -677,40 +748,119 @@ class ST7796:
                                       COL_WHITE, bg, 1)
         else:
             msg = ''
-            ds = self.printer.lookup_object('display_status', None)
-            if ds is not None:
-                msg = ds.get_status(eventtime).get('message', '') or ''
-            if not msg:
-                try:
-                    ps = self.printer.lookup_object('print_stats', None)
-                    if ps is not None:
-                        msg = str(ps.get_status(eventtime).get('state', ''))
-                except Exception:
-                    msg = ''
-            self._gui_text_center(0, self.width, y + 9, str(msg)[:56],
-                                  COL_WHITE, self.gui_bar_bg, 1)
+            fg = COL_WHITE
+            now = self.printer.get_reactor().monotonic()
+            if self._gui_msg and now < self._gui_msg_until:
+                msg, fg = self._gui_msg, COL_WARN
+            else:
+                ds = self.printer.lookup_object('display_status', None)
+                if ds is not None:
+                    msg = ds.get_status(eventtime).get('message', '') or ''
+                if not msg:
+                    try:
+                        ps = self.printer.lookup_object('print_stats', None)
+                        if ps is not None:
+                            msg = str(ps.get_status(eventtime).get('state',
+                                                                   ''))
+                    except Exception:
+                        msg = ''
+            self._gui_text_center(0, self.width, y + 9, str(msg)[:56], fg,
+                                  self.gui_bar_bg, 1)
     def _gui_bars(self, eventtime):
-        self._gui_topbar(eventtime)
-        self._gui_bottombar(eventtime)
+        if self._gui_ops:
+            return
+        self._gui_enqueue([lambda et=eventtime: self._gui_topbar(et),
+                           lambda et=eventtime: self._gui_bottombar(et)])
+    def _gui_enqueue(self, ops):
+        # Drain the draw commands a few at a time (see _gui_drain): sending a
+        # whole redraw synchronously blocks the reactor for ~50ms, which starves
+        # the move queue and makes the MCU shut down with "Timer too close".
+        if not ops:
+            return
+        self._gui_ops = ops
+        self.printer.get_reactor().register_callback(self._gui_drain)
+    def _gui_drain(self, eventtime):
+        reactor = self.printer.get_reactor()
+        ops = self._gui_ops
+        if not ops:
+            self._gui_ops = None
+            return reactor.NEVER
+        if self._disp_quiet(eventtime):
+            # Homing/moving started mid-redraw: drop it and redraw when idle.
+            self._gui_ops = None
+            self._gui_defer(eventtime, 0.4)
+            return reactor.NEVER
+        t0 = reactor.monotonic()
+        while ops:
+            ops.pop(0)()
+            if reactor.monotonic() - t0 >= 0.003:
+                break
+        if ops:
+            reactor.register_callback(self._gui_drain)
+        else:
+            self._gui_ops = None
+        return reactor.NEVER
+    def _gui_defer(self, eventtime, delay=0.4):
+        t = eventtime + delay
+        if self._gui_pending is None or t < self._gui_pending:
+            self._gui_pending = t
+    def _disp_quiet(self, eventtime):
+        # True => do not talk to the MCU at all (no touch poll, no redraw). While
+        # the printer runs short-buffered motion (homing / manual move) display
+        # traffic delays the trsync_state replies and the MCU shuts down with
+        # "Timer too close". Printing has a deep move buffer, so it is safe.
+        if self._gui_action_active:
+            return True
+        try:
+            ps = self.printer.lookup_object('print_stats').get_status(eventtime)
+            if ps['state'] in ('printing', 'paused'):
+                return False
+        except Exception:
+            pass
+        try:
+            th = self.printer.lookup_object('toolhead')
+            st = th.get_status(eventtime)
+            return (st['print_time'] - st['estimated_print_time']) > 0.02
+        except Exception:
+            return False
     def _gui_render(self, eventtime):
-        self.cmd_rect.send([0, 0, self.width, self.height, COL_BG])
-        self.cmd_rect.send([0, self.TOP_H, self.RAIL_W,
-                            self.height - self.TOP_H, self.gui_bar_bg])
+        if self._disp_quiet(eventtime) or self._gui_ops:
+            self._gui_defer(eventtime)
+            return
+        # Split the background into strips: a single full-screen tft_rect blocks
+        # the MCU for ~30ms and delays the trsync replies.
+        ops = []
+        for y in range(0, self.height, 20):
+            h = min(20, self.height - y)
+            ops.append(lambda y=y, h=h: self.cmd_rect.send(
+                [0, y, self.width, h, COL_BG]))
+        ops.append(lambda: self.cmd_rect.send([0, self.TOP_H, self.RAIL_W,
+                                               self.height - self.TOP_H,
+                                               self.gui_bar_bg]))
         for (x, y, name, action) in self._gui_rail():
-            self._gui_icon(name, x, y, COL_WHITE, self.gui_bar_bg)
+            ops.append(lambda x=x, y=y, name=name: self._gui_icon(
+                name, x, y, COL_WHITE, self.gui_bar_bg))
         for (x, y, w, h, idx, item) in self._gui_buttons():
             if item is None:
                 continue
             label, icon, action = item
-            self._gui_round(x + 4, y + 4, w - 8, h - 8, self.gui_btn_bg)
+            if isinstance(action, tuple) and action[0] == 'beep':
+                label = "Beep ON" if self.gui_beep else "Beep OFF"
+            elif isinstance(action, tuple) and action[0] == 'ext':
+                label = "E %gmm" % self._ext_step
             iw, ih = tft_icons.ICONS.get(icon, (0, 0, b''))[:2]
-            self._gui_icon(icon, x + (w - iw) // 2, y + 12, COL_WHITE,
-                           self.gui_btn_bg)
-            self._gui_text_center(x, w, y + 12 + ih + 6, label, COL_WHITE,
-                                  self.gui_btn_bg, 1)
-            self.cmd_rect.send([x + 10, y + h - 13, w - 20, 5, self._gc(idx)])
-        self._gui_topbar(eventtime)
-        self._gui_bottombar(eventtime)
+            ops.append(lambda x=x, y=y, w=w, h=h: self._gui_round(
+                x + 4, y + 4, w - 8, h - 8, self.gui_btn_bg))
+            ops.append(lambda x=x, y=y, w=w, icon=icon, iw=iw: self._gui_icon(
+                icon, x + (w - iw) // 2, y + 12, COL_WHITE, self.gui_btn_bg))
+            ops.append(lambda x=x, y=y, w=w, ih=ih, label=label:
+                       self._gui_text_center(x, w, y + 12 + ih + 10, label,
+                                             COL_WHITE, self.gui_btn_bg, 1))
+            ops.append(lambda x=x, y=y, w=w, h=h, idx=idx: self.cmd_rect.send(
+                [x + 10, y + h - 13, w - 20, 5, self._gc(idx)]))
+        ops.append(lambda et=eventtime: self._gui_topbar(et))
+        ops.append(lambda et=eventtime: self._gui_bottombar(et))
+        self._gui_enqueue(ops)
     def _raw_to_screen(self, rx, ry):
         if self.touch_swap:
             rx, ry = ry, rx
@@ -737,7 +887,55 @@ class ST7796:
             feed = 600 if axis == 'Z' else 3000
             return "G91\nG1 %s%.3f F%d\nG90" % (axis, amt, feed)
         return "G91\nG1 %s%.3f F300\nG90" % (axis, amt)
+    def _gui_run_action(self, script):
+        # Run GUI gcode in one serialised greenlet (beep + action together), so
+        # two actions never interleave, and mark the display busy meanwhile.
+        if not script:
+            return
+        reactor = self.printer.get_reactor()
+        self._gui_action_active = True
+        def _run(et, s=script):
+            try:
+                self.gcode.run_script_from_command(s)
+            except Exception:
+                logging.exception("st7796: GUI action failed")
+            finally:
+                self._gui_action_active = False
+                self._gui_defer(reactor.monotonic(), 0.2)
+        reactor.register_async_callback(_run)
+    # --- hot-end safeguard -------------------------------------------------
+    _E_WORD_RE = re.compile(r"E-?[0-9.]")
+    _FEED_MACROS = ('LOAD_FILAMENT', 'UNLOAD_FILAMENT')
+    def _nozzle_temp(self, eventtime):
+        try:
+            return self.printer.lookup_object('extruder').get_status(
+                eventtime)['temperature']
+        except Exception:
+            return None
+    def _needs_hot_end(self, script):
+        # True for anything that pushes/pulls filament (E moves, load/unload).
+        if not script:
+            return False
+        if any(m in script for m in self._FEED_MACROS):
+            return True
+        for line in script.split('\n'):
+            line = line.split(';')[0].upper().strip()
+            if line.startswith('G1') and self._E_WORD_RE.search(line):
+                return True
+        return False
+    def _gui_warn(self, text):
+        logging.info("st7796: %s", text)
+        try:
+            self.gcode.respond_info("st7796: " + text)
+        except Exception:
+            pass
+        self._gui_msg = text
+        self._gui_msg_until = self.printer.get_reactor().monotonic() + 4.
+        self._gui_next = 0.          # refresh the bottom bar on the next poll
+        if self.gui_beep and not self._gui_action_active:
+            self._gui_run_action("M300 S400 P150")
     def _gui_do(self, action, eventtime):
+        script = None
         if isinstance(action, tuple) and action[0] == 'scr':
             self.gui_screen = action[1]
             self._gui_render(eventtime)
@@ -745,14 +943,32 @@ class ST7796:
             i = self._gui_steps.index(self._gui_step)
             self._gui_step = self._gui_steps[(i + 1) % len(self._gui_steps)]
             self._gui_render(eventtime)
+        elif isinstance(action, tuple) and action[0] == 'beep':
+            self.gui_beep = not self.gui_beep
+            self._gui_render(eventtime)
+        elif isinstance(action, tuple) and action[0] == 'ext':
+            i = self._ext_steps.index(self._ext_step)
+            self._ext_step = self._ext_steps[(i + 1) % len(self._ext_steps)]
+            self._gui_render(eventtime)
+        elif isinstance(action, tuple) and action[0] == 'ex':
+            script = "G91\nG1 E%.3f F300\nG90" % (self._ext_step * action[1])
+            self.gcode.respond_info("GUI extrude: %g mm"
+                                    % (self._ext_step * action[1]))
         elif isinstance(action, tuple) and action[0] == 'mv':
-            gc = self._move_gcode(action[1], action[2])
-            self.gcode.respond_info("GUI move: %s" % gc.replace('\n', ' '))
-            self.printer.get_reactor().register_async_callback(
-                lambda et, a=gc: self.gcode.run_script_from_command(a))
+            script = self._move_gcode(action[1], action[2])
+            self.gcode.respond_info("GUI move: %s" % script.replace('\n', ' '))
         elif action:
-            self.printer.get_reactor().register_async_callback(
-                lambda et, a=action: self.gcode.run_script_from_command(a))
+            script = action
+        if (script and self.extrude_min_temp > 0
+                and self._needs_hot_end(script)):
+            temp = self._nozzle_temp(eventtime)
+            if temp is not None and temp < self.extrude_min_temp:
+                self._gui_warn("AVISO: bico %.0fC (min %.0fC) - extrusao"
+                               " bloqueada" % (temp, self.extrude_min_temp))
+                return
+        if self.gui_beep:
+            script = "M300 S1000 P60\n" + (script or "")
+        self._gui_run_action(script)
     def _gui_tap(self, rx, ry, eventtime):
         sx, sy = self._raw_to_screen(rx, ry)
         self.gcode.respond_info("GUI tap raw=(%d,%d) -> (%d,%d)"
@@ -762,6 +978,7 @@ class ST7796:
                 self._gui_step = val
                 self.gcode.respond_info("GUI step: %g mm" % val)
                 self._gui_render(eventtime)
+                self._gui_run_action("M300 S1000 P60" if self.gui_beep else None)
                 return
         for (x, y, name, action) in self._gui_rail():
             if x - 4 <= sx < x + 28 and y - 4 <= sy < y + 28:
