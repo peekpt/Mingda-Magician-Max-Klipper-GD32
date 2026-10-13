@@ -294,6 +294,8 @@ class ST7796:
         self.extrude_min_temp = config.getfloat('extrude_min_temp', 180.,
                                                 minval=0.)
         self.filament_sensor = config.get('filament_sensor', 'filament_sensor')
+        # Optional version stamp drawn in the top bar (debug aid)
+        self.gui_version = config.get('gui_version', '').strip()
         self._gui_msg = None
         self._gui_msg_until = 0.
         self._gui_action_active = False
@@ -1032,6 +1034,9 @@ class ST7796:
         self._gui_text(self.width - 52, 7,
                        "%02d:%02d" % (dur // 3600, (dur // 60) % 60),
                        COL_WHITE, bg, 1)
+        if self.gui_version:
+            self._gui_text(self.width - 140, 7,
+                           (self.gui_version + ' ' * 8)[:8], COL_DIM, bg, 1)
         # Filament runout indicator: green = filament ok, red = runout,
         # grey = sensor disabled/unavailable.
         en, det = self._filament_status(eventtime)
