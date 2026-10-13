@@ -6,6 +6,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
+import os
 import re
 from . import tft_icons
 
@@ -21,6 +22,11 @@ COL_C4     = 0xA700   # #A7E100  (lime)
 COL_WARN   = 0xFD44   # #f9a825
 COL_ERR    = 0x98E3   # #981E1F
 COL_WHITE  = 0xFFFF
+# Top-bar heater state colours
+COL_HEAT   = 0xEB20   # #ED6500  orange  -> heating towards the target
+COL_OK     = 0x2DE9   # #2DBF4A  green   -> at/over the target (-3C)
+COL_COOL   = 0x2DBE   # #29B6F6  blue    -> cooling (target 0)
+COL_DIM    = 0x39E7   # #3A3A3A  grey    -> disabled rail icons
 
 GUI_COLORS = (COL_C1, COL_C2, COL_C3, COL_C4)
 
@@ -77,36 +83,72 @@ GUI_SCREENS = {
         ("Guardar", "save", 'SAVE_CONFIG'),
         ("Voltar", "back", ('scr', 'main')),
     ],
-    'print': [
-        ("Pausa", "files", 'PAUSE'),
-        ("Retomar", "refresh", 'RESUME'),
-        ("Cancelar", "alert", 'CANCEL_PRINT'),
-        ("Home", "home", 'G28'),
-        ("", "", None),
-        ("", "", None),
-        ("", "", None),
-        ("Voltar", "back", ('scr', 'main')),
-    ],
+    # 'print' is built dynamically from the virtual SD files (see _print_items)
+    'print': [],
     'more': [
         ("PID hot", "fire", 'PID_CALIBRATE HEATER=extruder TARGET=200'),
         ("PID bed", "bed", 'PID_CALIBRATE HEATER=heater_bed TARGET=60'),
         ("Guardar", "save", 'SAVE_CONFIG'),
         ("Fan 100", "fan", 'M106 S255'),
-        ("Fan 0", "fan", 'M106 S0'),
+        ("Filam", "extrude", ('fsens',)),
         ("Beep", "alert", ('beep',)),
-        ("Reiniciar", "refresh", 'RESTART'),
+        ("Motores OFF", "power", 'M84'),
         ("Voltar", "back", ('scr', 'main')),
     ],
 }
 
-# Bottom strip: buttons per panel (label, step value in mm)
+# Bottom strip: buttons per panel. Value is the step (mm) for step panels, or a
+# gcode string for panels with actions (e.g. Print: pause/resume/cancel).
 GUI_STRIP = {
     'move': [('0.1', 0.1), ('0.5', 0.5), ('1', 1.0), ('5', 5.0),
              ('10', 10.0), ('25', 25.0), ('50', 50.0)],
+    'print': [("Pausa", 'PAUSE'), ("Retomar", 'RESUME'),
+              ("Cancelar", 'CANCEL_PRINT')],
 }
 
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
 ICON = 0x100
+
+
+def _mk_bmp(n, fn):
+    # n x n 1-bit bitmap (MSB first, row-major) from a predicate fn(i, j, n).
+    rb = (n + 7) // 8
+    out = bytearray()
+    for j in range(n):
+        bits = 0
+        for i in range(n):
+            bits = (bits << 1) | (1 if fn(i, j, n) else 0)
+        bits <<= (rb * 8 - n)
+        for k in range(rb):
+            out.append((bits >> ((rb - 1 - k) * 8)) & 0xFF)
+    return (n, n, bytes(out))
+
+
+def _pause_fn(i, j, n):
+    if not (0.18 * n <= j < 0.82 * n):
+        return False
+    return (0.30 * n <= i < 0.42 * n) or (0.58 * n <= i < 0.70 * n)
+
+
+def _play_fn(i, j, n):
+    h = abs(j - 0.5 * n)
+    if h >= 0.32 * n:
+        return False
+    return 0.26 * n <= i < 0.30 * n + 0.44 * n * (1.0 - h / (0.32 * n))
+
+
+def _x_fn(i, j, n):
+    if not (0.16 * n <= i < 0.84 * n and 0.16 * n <= j < 0.84 * n):
+        return False
+    return abs(i - j) <= 0.08 * n or abs(i - (n - 1 - j)) <= 0.08 * n
+
+
+# Icons we generate locally (not part of the MDI set).
+EXTRA_ICONS = {
+    'pause48': _mk_bmp(48, _pause_fn),
+    'play48': _mk_bmp(48, _play_fn),
+    'x48': _mk_bmp(48, _x_fn),
+}
 
 
 def _make_corner(r, fx, fy):
@@ -197,6 +239,16 @@ class ST7796:
         self.raw_y_max = config.getint('raw_y_max', 1900)
         self.gui_status_fg = int(config.get('gui_status_fg', '0xFFFF'), 0) & 0xFFFF
         self.gui_radius = config.getint('gui_radius', 8, minval=0, maxval=16)
+        # Button icons are drawn from the 64px bitmaps; scale them down for a
+        # lighter look (and much less serial traffic).
+        self.gui_icon_scale = config.getfloat('gui_icon_scale', 0.4,
+                                             minval=0.15, maxval=1.0)
+        self.gui_btn_gap = config.getint('gui_btn_gap', 8, minval=0, maxval=40)
+        self._icon_cache = {}
+        # Temperature history for the printing screen graph (sampled in the bars)
+        self._t_hist = []
+        self._t_last = 0.
+        self._last_ps_state = 'ready'
         self._corners = (_make_corner(self.gui_radius, False, False),
                          _make_corner(self.gui_radius, True, False),
                          _make_corner(self.gui_radius, False, True),
@@ -210,6 +262,7 @@ class ST7796:
         # Refuse filament moves below this nozzle temperature (0 disables).
         self.extrude_min_temp = config.getfloat('extrude_min_temp', 180.,
                                                 minval=0.)
+        self.filament_sensor = config.get('filament_sensor', 'filament_sensor')
         self._gui_msg = None
         self._gui_msg_until = 0.
         self._gui_action_active = False
@@ -263,6 +316,27 @@ class ST7796:
         self.icons = {}
         self.grid = [[ord(' ')] * self.cols for _ in range(self.rows)]
         self.shown = [[ord(' ')] * self.cols for _ in range(self.rows)]
+        # Virtual SD file browser (Print panel)
+        self._sd_page = 0
+        self._sd_files_cache = []
+        self._sd_cache_t = 0.
+        self._sd_per_page = 6
+        self._sd_sel = 0
+        self._sd_top = 0
+        self._sd_vis = 12
+        # Track real homing/probing so the display stays off the serial link.
+        # (Must not rely on print_stats: a print file starts with G28.)
+        self._homing = 0
+        self._homing_t = 0.
+        # After any GUI action that may move (print/move/home) keep the display
+        # silent for a short grace window: the first moves of a print start are
+        # short-buffered and a 7 KB redraw on the wire delays them ~15 ms.
+        self._gui_grace_until = 0.
+        self.printer.register_event_handler("homing:homing_move_begin",
+                                            self._homing_begin)
+        self.printer.register_event_handler("homing:homing_move_end",
+                                            self._homing_end)
+        self.printer.register_event_handler("klippy:connect", self._on_connect)
     # --- display framework interface ---
     def set_glyphs(self, glyphs):
         self.icons = glyphs
@@ -561,6 +635,17 @@ class ST7796:
                 self._mon = None
             return eventtime + 0.04
         if self.gui:
+            try:
+                st = self.printer.lookup_object('print_stats').get_status(
+                    eventtime)['state']
+            except Exception:
+                st = 'ready'
+            if st != self._last_ps_state:
+                self._last_ps_state = st
+                if st in ('printing', 'paused'):
+                    # A print just started: jump to the printing screen.
+                    self.gui_screen = 'print'
+                    self._gui_defer(eventtime, 0.05)
             if eventtime >= self._gui_next:
                 self._gui_next = eventtime + 0.5
                 self._gui_bars(eventtime)
@@ -652,8 +737,67 @@ class ST7796:
     def _gui_text_center(self, x0, w, y, text, fg, bg, scale=1):
         tw = len(text) * 8 * scale
         self._gui_text(x0 + max(0, (w - tw) // 2), y, text, fg, bg, scale)
-    def _gui_icon(self, name, x, y, fg, bg):
-        icon = tft_icons.ICONS.get(name)
+    @staticmethod
+    def _resample(data, w, h, nw, nh):
+        # Box-filter downscale of a 1-bit bitmap (MSB first, row-major).
+        rowbytes = (w + 7) // 8
+        nrb = (nw + 7) // 8
+        out = bytearray()
+        for j in range(nh):
+            j0 = j * h // nh
+            j1 = max(j0 + 1, (j + 1) * h // nh)
+            bits = 0
+            for i in range(nw):
+                i0 = i * w // nw
+                i1 = max(i0 + 1, (i + 1) * w // nw)
+                on = tot = 0
+                for sj in range(j0, j1):
+                    base = sj * rowbytes
+                    for si in range(i0, i1):
+                        tot += 1
+                        idx = base + (si >> 3)
+                        if idx < len(data) and data[idx] & (0x80 >> (si & 7)):
+                            on += 1
+                bits = (bits << 1) | (1 if tot and on * 2 >= tot else 0)
+            bits <<= (nrb * 8 - nw)
+            for k in range(nrb):
+                out.append((bits >> ((nrb - 1 - k) * 8)) & 0xFF)
+        return bytes(out)
+    def _scaled_icon(self, name):
+        ent = EXTRA_ICONS.get(name)
+        if ent is not None:
+            return ent            # locally generated, already the right size
+        ent = tft_icons.ICONS.get(name)
+        if ent is None:
+            return None
+        s = self.gui_icon_scale
+        if s >= 0.999:
+            return ent
+        key = (name, s)
+        res = self._icon_cache.get(key)
+        if res is not None:
+            return res
+        w, h, data = ent
+        nw = max(4, int(round(w * s)))
+        nh = max(4, int(round(h * s)))
+        res = (nw, nh, self._resample(data, w, h, nw, nh))
+        self._icon_cache[key] = res
+        return res
+    def _icon_at(self, name, size):
+        ent = EXTRA_ICONS.get(name) or tft_icons.ICONS.get(name)
+        if ent is None:
+            return None
+        w, h, data = ent
+        if w == size and h == size:
+            return ent
+        key = ('@', name, size)
+        res = self._icon_cache.get(key)
+        if res is not None:
+            return res
+        res = (size, size, self._resample(data, w, h, size, size))
+        self._icon_cache[key] = res
+        return res
+    def _draw_bmp(self, icon, x, y, fg, bg):
         if icon is None or self.cmd_bmp is None:
             return
         w, h, data = icon
@@ -663,6 +807,10 @@ class ST7796:
             rows = min(rows_per, h - off)
             chunk = data[off * rowbytes:(off + rows) * rowbytes]
             self.cmd_bmp.send([x, y, w, rows, off, fg, bg, bytes(chunk)])
+    def _gui_icon(self, name, x, y, fg, bg):
+        self._draw_bmp(self._scaled_icon(name), x, y, fg, bg)
+    def _gui_icon_at(self, name, x, y, fg, bg, size):
+        self._draw_bmp(self._icon_at(name, size), x, y, fg, bg)
     def _bmp_at(self, bmp, x, y, fg, bg):
         w, h, data = bmp
         if w <= 0 or h <= 0 or self.cmd_bmp is None:
@@ -678,13 +826,84 @@ class ST7796:
         self._bmp_at(tr, x + w - r, y, color, self.gui_bg)
         self._bmp_at(bl, x, y + h - r, color, self.gui_bg)
         self._bmp_at(br, x + w - r, y + h - r, color, self.gui_bg)
+    # --- virtual SD file browser ---
+    def _sd_dir(self):
+        try:
+            vsd = self.printer.lookup_object('virtual_sdcard')
+            return getattr(vsd, 'sdcard_dirname', None)
+        except Exception:
+            return None
+    def _sd_files(self):
+        # [(name, mtime)] newest first.
+        now = self.printer.get_reactor().monotonic()
+        if now - self._sd_cache_t < 3.:
+            return self._sd_files_cache
+        self._sd_cache_t = now
+        d = self._sd_dir()
+        entries = []
+        if d and os.path.isdir(d):
+            try:
+                for n in os.listdir(d):
+                    if n.lower().rsplit('.', 1)[-1] not in ('gcode', 'gco',
+                                                            'g'):
+                        continue
+                    try:
+                        m = os.stat(os.path.join(d, n)).st_mtime
+                    except OSError:
+                        m = 0.
+                    entries.append((n, m))
+            except OSError:
+                entries = []
+        entries.sort(key=lambda e: -e[1])
+        self._sd_files_cache = entries
+        return entries
+    # Vertical list geometry: the list fills the button area, with up/down/print
+    # buttons in a strip on the right.
+    RIGHT_W = 80
+    LIST_PITCH = 20
+    def _list_area(self):
+        return (self.RAIL_W, self.TOP_H, self.width - self.RIGHT_W,
+                self.height - self.STRIP_H)
+    def _list_rows(self):
+        x0, y0, x1, y1 = self._list_area()
+        pitch = self.LIST_PITCH
+        n = max(1, (y1 - y0) // pitch)
+        files = self._sd_files()
+        self._sd_vis = n
+        self._sd_sel = max(0, min(max(0, len(files) - 1), self._sd_sel))
+        if self._sd_sel < self._sd_top:
+            self._sd_top = self._sd_sel
+        if self._sd_sel >= self._sd_top + n:
+            self._sd_top = self._sd_sel - n + 1
+        self._sd_top = max(0, min(self._sd_top, max(0, len(files) - n)))
+        out = []
+        for i in range(n):
+            k = self._sd_top + i
+            if k >= len(files):
+                break
+            out.append((x0, y0 + i * pitch, x1 - x0, pitch, k, files[k][0]))
+        return out
+    def _list_btns(self):
+        x0, y0, x1, y1 = self._list_area()
+        bw = bh = 64
+        bx = x1 + (self.RIGHT_W - bw) // 2
+        gap = 6
+        total = 3 * bh + 2 * gap
+        by = y0 + max(0, (y1 - y0 - total) // 2)
+        kinds = ('up', 'down', 'print')
+        return [(bx, by + i * (bh + gap), bw, bh, k)
+                for i, k in enumerate(kinds)]
+    def _screen_items(self):
+        if self.gui_screen == 'print':
+            return []
+        return GUI_SCREENS.get(self.gui_screen, [])
     def _gui_buttons(self):
         cols, rows = 4, 2
         x0, y0 = self.RAIL_W, self.TOP_H
         x1, y1 = self.width, self.height - self.STRIP_H
         bw = (x1 - x0) // cols
         bh = (y1 - y0) // rows
-        screen = GUI_SCREENS.get(self.gui_screen, [])
+        screen = self._screen_items()
         out = []
         for idx in range(cols * rows):
             item = screen[idx] if idx < len(screen) else None
@@ -699,7 +918,9 @@ class ST7796:
         step = min(56, (area - 40) // max(1, n - 1))
         total = (n - 1) * step + 24
         y0 = self.TOP_H + (area - total) // 2
-        return [(6, y0 + i * step, name, action)
+        return [(6, y0 + i * step, name, action,
+                 # Back/Home are meaningless on the main screen: dim + inert.
+                 self.gui_screen == 'main' and action == ('scr', 'main'))
                 for i, (name, action) in enumerate(items)]
     def _gui_strip(self):
         items = GUI_STRIP.get(self.gui_screen)
@@ -711,6 +932,27 @@ class ST7796:
         y = self.height - self.STRIP_H
         return [(x0 + i * w + 2, y + 3, w - 5, self.STRIP_H - 6, lab, val)
                 for i, (lab, val) in enumerate(items)]
+    def _temp_color(self, cur, tgt):
+        # orange while heating, green once at target, blue when cooling/off
+        if tgt <= 0.:
+            return COL_COOL
+        if cur >= tgt - 3.:
+            return COL_OK
+        return COL_HEAT
+    def _gui_heater(self, icon, iy, tx, st, ty=7):
+        cur = st['temperature']
+        tgt = st['target']
+        col = self._temp_color(cur, tgt)
+        self._gui_icon_at(icon, tx - 28, iy, col, self.gui_bar_bg, 20)
+        self._gui_text(tx, ty, "%d>%d" % (cur, tgt), col, self.gui_bar_bg, 1)
+    def _filament_status(self, eventtime):
+        try:
+            st = self.printer.lookup_object(
+                'filament_switch_sensor ' + self.filament_sensor).get_status(
+                    eventtime)
+            return bool(st.get('enabled')), bool(st.get('filament_detected'))
+        except Exception:
+            return None, None
     def _gui_topbar(self, eventtime):
         self.cmd_rect.send([0, 0, self.width, self.TOP_H, self.gui_bar_bg])
         try:
@@ -718,15 +960,10 @@ class ST7796:
             bd = self.printer.lookup_object('heater_bed').get_status(eventtime)
         except Exception:
             return
-        self._gui_icon('nozzle20', 6, 9, self._gc(0), self.gui_bar_bg)
-        self._gui_text(38, 7, "%d" % nb['temperature'], COL_WHITE,
-                       self.gui_bar_bg, 1)
-        self._gui_icon('bed20', 104, 7, COL_C2, self.gui_bar_bg)
-        self._gui_text(136, 7, "%d" % bd['temperature'], COL_WHITE,
-                       self.gui_bar_bg, 1)
-        title = "Klipper | " + self.gui_screen.capitalize()
-        self._gui_text_center(0, self.width, 7, title, COL_WHITE,
-                              self.gui_bar_bg, 1)
+        self._gui_heater('nozzle', 9, 34, nb)
+        self._gui_heater('bed', 7, 130, bd)
+        self._gui_text_center(0, self.width, 7, self.gui_screen.capitalize(),
+                              COL_WHITE, self.gui_bar_bg, 1)
         try:
             dur = int(self.printer.lookup_object('print_stats').get_status(
                 eventtime)['print_duration'])
@@ -735,13 +972,23 @@ class ST7796:
         self._gui_text(self.width - 52, 7,
                        "%02d:%02d" % (dur // 3600, (dur // 60) % 60),
                        COL_WHITE, self.gui_bar_bg, 1)
+        # Filament runout indicator: green = filament ok, red = runout,
+        # grey = sensor disabled/unavailable.
+        en, det = self._filament_status(eventtime)
+        fcol = COL_DIM
+        if en and det:
+            fcol = COL_OK
+        elif en and not det:
+            fcol = COL_ERR
+        self._gui_icon_at('extrude', self.width - 78, 8, fcol,
+                          self.gui_bar_bg, 18)
     def _gui_bottombar(self, eventtime):
         y = self.height - self.STRIP_H
         self.cmd_rect.send([0, y, self.width, self.STRIP_H, self.gui_bar_bg])
         strip = self._gui_strip()
         if strip:
             for (x, yy, w, h, lab, val) in strip:
-                sel = abs(val - self._gui_step) < 1e-6
+                sel = isinstance(val, float) and abs(val - self._gui_step) < 1e-6
                 bg = COL_ACTIVE if sel else self.gui_btn_bg
                 self._gui_round(x, yy, w, h, bg)
                 self._gui_text_center(x, w, yy + (h - 16) // 2, lab,
@@ -767,6 +1014,24 @@ class ST7796:
             self._gui_text_center(0, self.width, y + 9, str(msg)[:56], fg,
                                   self.gui_bar_bg, 1)
     def _gui_bars(self, eventtime):
+        sampled = False
+        now = self.printer.get_reactor().monotonic()
+        if now - self._t_last >= 2.:
+            self._t_last = now
+            try:
+                e = self.printer.lookup_object('extruder').get_status(
+                    eventtime)['temperature']
+                b = self.printer.lookup_object('heater_bed').get_status(
+                    eventtime)['temperature']
+            except Exception:
+                e = b = 0.
+            self._t_hist.append((e, b))
+            if len(self._t_hist) > 60:
+                self._t_hist.pop(0)
+            sampled = True
+        if (sampled and self.gui_screen == 'print'
+                and self._print_view(eventtime)):
+            self._gui_defer(eventtime, 0.05)      # refresh the graphs
         if self._gui_ops:
             return
         self._gui_enqueue([lambda et=eventtime: self._gui_topbar(et),
@@ -804,25 +1069,173 @@ class ST7796:
         t = eventtime + delay
         if self._gui_pending is None or t < self._gui_pending:
             self._gui_pending = t
+    def _homing_begin(self, hmove):
+        self._homing += 1
+        self._homing_t = self.printer.get_reactor().monotonic()
+        logging.info("st7796: homing begin - display muted (depth %d)",
+                     self._homing)
+    def _homing_end(self, hmove):
+        self._homing = max(0, self._homing - 1)
+        self._homing_t = self.printer.get_reactor().monotonic()
+        logging.info("st7796: homing end - display resumed (depth %d)",
+                     self._homing)
+    def _on_connect(self):
+        self._homing = 0
     def _disp_quiet(self, eventtime):
         # True => do not talk to the MCU at all (no touch poll, no redraw). While
-        # the printer runs short-buffered motion (homing / manual move) display
-        # traffic delays the trsync_state replies and the MCU shuts down with
-        # "Timer too close". Printing has a deep move buffer, so it is safe.
+        # the printer runs short-buffered motion (homing / probing / manual move)
+        # display traffic delays the trsync_state replies and the MCU shuts down
+        # with "Timer too close". Printing has a deep move buffer, so redraws are
+        # allowed then - but a G28/G29 inside a print still sets _homing.
         if self._gui_action_active:
             return True
+        if self._homing:
+            if eventtime - self._homing_t > 300.:   # safety: stale counter
+                self._homing = 0
+            else:
+                return True
+        if eventtime < self._gui_grace_until:
+            return True                 # just after a GUI action that may move
         try:
             ps = self.printer.lookup_object('print_stats').get_status(eventtime)
-            if ps['state'] in ('printing', 'paused'):
-                return False
+            printing = ps['state'] in ('printing', 'paused')
         except Exception:
-            pass
+            printing = False
         try:
             th = self.printer.lookup_object('toolhead')
             st = th.get_status(eventtime)
-            return (st['print_time'] - st['estimated_print_time']) > 0.02
+            buf = st['print_time'] - st['estimated_print_time']
         except Exception:
             return False
+        if buf <= 0.001:
+            return False                # idle: safe to draw
+        # Moves pending. A steady print keeps a deep (1-2 s) buffer, so a redraw
+        # is harmless there; a shallow buffer (print start, manual moves) is not.
+        return (not printing) or buf < 1.0
+    def _gui_list_ops(self, ops):
+        x0, y0, x1, y1 = self._list_area()
+        ops.append(lambda: self.cmd_rect.send([x0, y0, x1 - x0, y1 - y0,
+                                               COL_BG]))
+        for (rx, ry, rw, rh, k, name) in self._list_rows():
+            bg = COL_ACTIVE if k == self._sd_sel else COL_BG
+            ops.append(lambda rx=rx, ry=ry, rw=rw, rh=rh, bg=bg:
+                       self.cmd_rect.send([rx, ry, rw, rh, bg]))
+            if k == self._sd_sel:
+                ops.append(lambda rx=rx, ry=ry, rh=rh:
+                           self.cmd_rect.send([rx, ry, 4, rh, COL_C1]))
+            ops.append(lambda rx=rx, ry=ry, name=name, bg=bg:
+                       self._gui_text(rx + 12, ry + 2, name[:44], COL_WHITE,
+                                      bg, 1))
+        for (bx, by, bw, bh, kind) in self._list_btns():
+            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh:
+                       self._gui_round(bx, by, bw, bh, self.gui_btn_bg))
+            ops.append(lambda bx=bx, by=by, kind=kind:
+                       self._gui_icon(kind, bx, by, COL_WHITE, self.gui_btn_bg))
+    def _list_press(self, kind, eventtime):
+        if kind == 'up':
+            self._sd_sel = max(0, self._sd_sel - 1)
+        elif kind == 'down':
+            n = len(self._sd_files())
+            self._sd_sel = min(max(0, n - 1), self._sd_sel + 1)
+        elif kind == 'print':
+            files = self._sd_files()
+            if files:
+                self._gui_do(('sd', files[self._sd_sel][0]), eventtime)
+            return
+        self._gui_render(eventtime)
+        self._gui_run_action("M300 S1000 P60" if self.gui_beep else None)
+    # --- printing screen: progress + temperature graphs + pause/stop ---
+    def _print_status(self, eventtime):
+        try:
+            return self.printer.lookup_object('print_stats').get_status(
+                eventtime)
+        except Exception:
+            return None
+    def _print_view(self, eventtime):
+        ps = self._print_status(eventtime)
+        return ps is not None and ps['state'] in ('printing', 'paused')
+    def _print_btns(self):
+        x0, y0, x1, y1 = self._list_area()
+        bw = bh = 64
+        bx = x1 + (self.RIGHT_W - bw) // 2
+        gap = 20
+        by = y0 + max(0, (y1 - y0 - (2 * bh + gap)) // 2)
+        return [(bx, by, bw, bh, 'pause'),
+                (bx, by + bh + gap, bw, bh, 'stop')]
+    def _graph_ops(self, ops, gx, gy, gw, gh, series, tgt, color, label, cur):
+        ops.append(lambda gx=gx, gy=gy, gw=gw, gh=gh:
+                   self.cmd_rect.send([gx, gy, gw, gh, self.gui_bar_bg]))
+        mx = max(120.0, tgt + 20.0, (max(series) + 20.0) if series else 120.0)
+        if tgt > 0:
+            ty = gy + gh - 1 - int(min(1.0, tgt / mx) * (gh - 2))
+            ops.append(lambda ty=ty: self.cmd_rect.send([gx, ty, gw, 1,
+                                                         COL_ACTIVE]))
+        n = len(series)
+        if n:
+            cw = max(2, gw // n)
+            for i, v in enumerate(series):
+                h = int(min(1.0, v / mx) * (gh - 2))
+                if h <= 0:
+                    continue
+                x = gx + i * gw // n
+                yy = gy + gh - 1 - h
+                ops.append(lambda x=x, yy=yy, h=h, cw=cw:
+                           self.cmd_rect.send([x, yy, cw, h, color]))
+        ops.append(lambda gx=gx, gy=gy, label=label, cur=cur, tgt=tgt:
+                   self._gui_text(gx + 4, gy + 2, "%s %d>%d" % (label, cur,
+                                                                tgt),
+                                  COL_WHITE, self.gui_bar_bg, 1))
+    def _print_view_ops(self, ops, eventtime):
+        ps = self._print_status(eventtime)
+        if ps is None:
+            return
+        x0, y0, x1, y1 = self._list_area()
+        w = x1 - x0
+        try:
+            vsd = self.printer.lookup_object('virtual_sdcard')
+            prog = float(vsd.get_status(eventtime).get('progress') or 0.)
+        except Exception:
+            prog = 0.
+        if not prog:
+            prog = float(ps.get('progress') or 0.)
+        prog = min(1., max(0., prog))
+        fname = os.path.basename(ps.get('filename') or '') or '-'
+        ops.append(lambda: self._gui_text_center(
+            x0, w, y0 + 2, "%d%%  %s" % (int(prog * 100), fname[:34]),
+            COL_WHITE, COL_BG, 1))
+        ops.append(lambda: self._gui_round(x0 + 2, y0 + 22, w - 4, 26,
+                                           self.gui_btn_bg))
+        fill = int((w - 10) * prog)
+        if fill > 0:
+            ops.append(lambda fill=fill: self.cmd_rect.send(
+                [x0 + 5, y0 + 25, fill, 20, COL_C1]))
+        gh = max(40, (y1 - (y0 + 54) - 6) // 2)
+        gx, gw = x0 + 2, w - 4
+        g1y = y0 + 54
+        g2y = g1y + gh + 6
+        try:
+            ex = self.printer.lookup_object('extruder').get_status(eventtime)
+            bd = self.printer.lookup_object('heater_bed').get_status(eventtime)
+        except Exception:
+            return
+        ext = [s[0] for s in self._t_hist]
+        bed = [s[1] for s in self._t_hist]
+        self._graph_ops(ops, gx, g1y, gw, gh, ext, ex['target'], COL_C1,
+                        "Bico", int(ex['temperature']))
+        self._graph_ops(ops, gx, g2y, gw, gh, bed, bd['target'], COL_C2,
+                        "Cama", int(bd['temperature']))
+        paused = ps['state'] == 'paused'
+        for (bx, by, bw, bh, kind) in self._print_btns():
+            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh:
+                       self._gui_round(bx, by, bw, bh, self.gui_btn_bg))
+            icon = ('play48' if paused else 'pause48') if kind == 'pause' \
+                else 'x48'
+            col = COL_WHITE if kind == 'pause' else COL_ERR
+            iw, ih = EXTRA_ICONS[icon][:2]
+            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, icon=icon, col=col,
+                       iw=iw, ih=ih: self._gui_icon(
+                           icon, bx + (bw - iw) // 2, by + (bh - ih) // 2,
+                           col, self.gui_btn_bg))
     def _gui_render(self, eventtime):
         if self._disp_quiet(eventtime) or self._gui_ops:
             self._gui_defer(eventtime)
@@ -837,9 +1250,16 @@ class ST7796:
         ops.append(lambda: self.cmd_rect.send([0, self.TOP_H, self.RAIL_W,
                                                self.height - self.TOP_H,
                                                self.gui_bar_bg]))
-        for (x, y, name, action) in self._gui_rail():
-            ops.append(lambda x=x, y=y, name=name: self._gui_icon(
-                name, x, y, COL_WHITE, self.gui_bar_bg))
+        for (x, y, name, action, dim) in self._gui_rail():
+            ops.append(lambda x=x, y=y, name=name, dim=dim: self._gui_icon_at(
+                name, x, y, COL_DIM if dim else COL_WHITE, self.gui_bar_bg, 24))
+        if self.gui_screen == 'print':
+            if self._print_view(eventtime):
+                self._print_view_ops(ops, eventtime)
+            else:
+                self._gui_list_ops(ops)
+        g = self.gui_btn_gap
+        i2 = g // 2
         for (x, y, w, h, idx, item) in self._gui_buttons():
             if item is None:
                 continue
@@ -848,16 +1268,26 @@ class ST7796:
                 label = "Beep ON" if self.gui_beep else "Beep OFF"
             elif isinstance(action, tuple) and action[0] == 'ext':
                 label = "E %gmm" % self._ext_step
-            iw, ih = tft_icons.ICONS.get(icon, (0, 0, b''))[:2]
-            ops.append(lambda x=x, y=y, w=w, h=h: self._gui_round(
-                x + 4, y + 4, w - 8, h - 8, self.gui_btn_bg))
-            ops.append(lambda x=x, y=y, w=w, icon=icon, iw=iw: self._gui_icon(
-                icon, x + (w - iw) // 2, y + 12, COL_WHITE, self.gui_btn_bg))
-            ops.append(lambda x=x, y=y, w=w, ih=ih, label=label:
-                       self._gui_text_center(x, w, y + 12 + ih + 10, label,
-                                             COL_WHITE, self.gui_btn_bg, 1))
-            ops.append(lambda x=x, y=y, w=w, h=h, idx=idx: self.cmd_rect.send(
-                [x + 10, y + h - 13, w - 20, 5, self._gc(idx)]))
+            elif isinstance(action, tuple) and action[0] == 'fsens':
+                en, det = self._filament_status(eventtime)
+                label = "Filam ON" if en else "Filam OFF"
+            sc = self._scaled_icon(icon)
+            iw, ih = (sc[0], sc[1]) if sc else (0, 0)
+            bx, by = x + i2, y + i2
+            bw, bh = w - g, h - g
+            iy = by + max(4, (bh - (ih + 8 + 16)) // 2)
+            ty = iy + ih + 8
+            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self._gui_round(
+                bx, by, bw, bh, self.gui_btn_bg))
+            ops.append(lambda bx=bx, bw=bw, iy=iy, icon=icon, iw=iw:
+                       self._gui_icon(icon, bx + (bw - iw) // 2, iy,
+                                      COL_WHITE, self.gui_btn_bg))
+            ops.append(lambda bx=bx, bw=bw, ty=ty, label=label:
+                       self._gui_text_center(bx, bw, ty, label, COL_WHITE,
+                                             self.gui_btn_bg, 1))
+            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, idx=idx:
+                       self.cmd_rect.send([bx + 10, by + bh - 13, bw - 20, 5,
+                                           self._gc(idx)]))
         ops.append(lambda et=eventtime: self._gui_topbar(et))
         ops.append(lambda et=eventtime: self._gui_bottombar(et))
         self._gui_enqueue(ops)
@@ -887,12 +1317,19 @@ class ST7796:
             feed = 600 if axis == 'Z' else 3000
             return "G91\nG1 %s%.3f F%d\nG90" % (axis, amt, feed)
         return "G91\nG1 %s%.3f F300\nG90" % (axis, amt)
+    _MOVE_TOKENS = ('G28', 'G29', 'G1', 'G2', 'G3', 'SDCARD_PRINT_FILE',
+                    'PROBE_CALIBRATE', 'BED_MESH_CALIBRATE', 'TESTZ',
+                    'LOAD_FILAMENT', 'UNLOAD_FILAMENT', 'RESTART',
+                    'CANCEL_PRINT')
     def _gui_run_action(self, script):
         # Run GUI gcode in one serialised greenlet (beep + action together), so
         # two actions never interleave, and mark the display busy meanwhile.
         if not script:
             return
         reactor = self.printer.get_reactor()
+        if any(t in script for t in self._MOVE_TOKENS):
+            # Moving: stay off the wire for a moment after dispatching.
+            self._gui_grace_until = reactor.monotonic() + 6.
         self._gui_action_active = True
         def _run(et, s=script):
             try:
@@ -950,15 +1387,45 @@ class ST7796:
             i = self._ext_steps.index(self._ext_step)
             self._ext_step = self._ext_steps[(i + 1) % len(self._ext_steps)]
             self._gui_render(eventtime)
+        elif isinstance(action, tuple) and action[0] == 'fsens':
+            en, det = self._filament_status(eventtime)
+            new = 0 if en else 1
+            script = "SET_FILAMENT_SENSOR SENSOR=%s ENABLE=%d" % (
+                self.filament_sensor, new)
+            self.gcode.respond_info("GUI filamento: sensor %s"
+                                    % ("ON" if new else "OFF"))
+            self._gui_defer(eventtime, 0.3)     # refresh the label
         elif isinstance(action, tuple) and action[0] == 'ex':
             script = "G91\nG1 E%.3f F300\nG90" % (self._ext_step * action[1])
             self.gcode.respond_info("GUI extrude: %g mm"
                                     % (self._ext_step * action[1]))
+        elif isinstance(action, tuple) and action[0] == 'sd':
+            try:
+                ps = self.printer.lookup_object('print_stats').get_status(
+                    eventtime)
+                state = ps['state']
+            except Exception:
+                state = 'ready'
+            if state in ('printing', 'paused'):
+                self._gui_warn("Impressao em curso - cancelar primeiro")
+                return
+            fname = str(action[1]).replace('"', '')
+            self.gcode.respond_info("GUI print: %s" % fname)
+            script = 'SDCARD_PRINT_FILE FILENAME="%s"' % fname
         elif isinstance(action, tuple) and action[0] == 'mv':
             script = self._move_gcode(action[1], action[2])
             self.gcode.respond_info("GUI move: %s" % script.replace('\n', ' '))
         elif action:
             script = action
+        if script and script.strip().upper().startswith('M84'):
+            try:
+                st = self.printer.lookup_object('print_stats').get_status(
+                    eventtime)['state']
+            except Exception:
+                st = 'ready'
+            if st in ('printing', 'paused'):
+                self._gui_warn("Impressao em curso - M84 bloqueado")
+                return
         if (script and self.extrude_min_temp > 0
                 and self._needs_hot_end(script)):
             temp = self._nozzle_temp(eventtime)
@@ -975,14 +1442,51 @@ class ST7796:
                                 % (rx, ry, sx, sy))
         for (x, y, w, h, lab, val) in self._gui_strip():
             if x <= sx < x + w and y <= sy < y + h:
-                self._gui_step = val
-                self.gcode.respond_info("GUI step: %g mm" % val)
-                self._gui_render(eventtime)
-                self._gui_run_action("M300 S1000 P60" if self.gui_beep else None)
+                if isinstance(val, str):
+                    self.gcode.respond_info("GUI: %s" % lab)
+                    script = val
+                    if self.gui_beep:
+                        script = "M300 S1000 P60\n" + script
+                    self._gui_run_action(script)
+                else:
+                    self._gui_step = val
+                    self.gcode.respond_info("GUI step: %g mm" % val)
+                    self._gui_render(eventtime)
+                    self._gui_run_action(
+                        "M300 S1000 P60" if self.gui_beep else None)
                 return
-        for (x, y, name, action) in self._gui_rail():
+        if self.gui_screen == 'print':
+            if self._print_view(eventtime):
+                ps = self._print_status(eventtime) or {}
+                paused = ps.get('state') == 'paused'
+                for (bx, by, bw, bh, kind) in self._print_btns():
+                    if bx <= sx < bx + bw and by <= sy < by + bh:
+                        if kind == 'pause':
+                            self.gcode.respond_info(
+                                "GUI: %s" % ("Retomar" if paused else "Pausa"))
+                            self._gui_do('RESUME' if paused else 'PAUSE',
+                                         eventtime)
+                        else:
+                            self.gcode.respond_info("GUI: Cancelar")
+                            self._gui_do('CANCEL_PRINT', eventtime)
+                        return
+            else:
+                for (bx, by, bw, bh, kind) in self._list_btns():
+                    if bx <= sx < bx + bw and by <= sy < by + bh:
+                        self.gcode.respond_info("GUI file: %s" % kind)
+                        self._list_press(kind, eventtime)
+                        return
+                for (rx, ry, rw, rh, k, name) in self._list_rows():
+                    if rx <= sx < rx + rw and ry <= sy < ry + rh:
+                        self._sd_sel = k
+                        self.gcode.respond_info("GUI file sel: %s" % name)
+                        self._gui_render(eventtime)
+                        self._gui_run_action("M300 S1000 P60"
+                                             if self.gui_beep else None)
+                        return
+        for (x, y, name, action, dim) in self._gui_rail():
             if x - 4 <= sx < x + 28 and y - 4 <= sy < y + 28:
-                if action:
+                if action and not dim:
                     self._gui_do(action, eventtime)
                 return
         for (x, y, w, h, idx, item) in self._gui_buttons():
