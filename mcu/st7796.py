@@ -1072,8 +1072,9 @@ class ST7796:
                                                                    ''))
                     except Exception:
                         msg = ''
+            m = str(msg)[:56]
             self._gui_text_center(0, self.width, y + 9,
-                                  (str(msg)[:60] + ' ' * 60)[:60], fg,
+                                  (' ' + m.center(58) + ' ')[:60], fg,
                                   bg, 1)
     def _gui_bars(self, eventtime):
         sampled = False
