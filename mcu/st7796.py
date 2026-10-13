@@ -1303,13 +1303,29 @@ class ST7796:
         speed = float(gm.get('speed_factor') or 1.) * 100.
         flow = float(gm.get('extrude_factor') or 1.) * 100.
         fansp = float(fn.get('speed') or 0.) * 100.
-        # Info panel: 2 columns of small coloured icons with the value below and,
-        # on the last row, a wide text progress bar with the percentage centred.
+        try:
+            gp = gm['gcode_position']
+            xc, yc, zc = float(gp[0]), float(gp[1]), float(gp[2])
+        except Exception:
+            xc = yc = zc = 0.
+        lay = '-'
+        try:
+            info = ps.get('info') or {}
+            cl, tl = info.get('current_layer'), info.get('total_layer')
+            if cl is not None and tl:
+                lay = "%d/%d" % (cl, tl)
+            elif cl is not None:
+                lay = str(cl)
+        except Exception:
+            pass
+        # Info panel: 2 columns of small coloured icons with the value below,
+        # then a line with X/Y/Z and finally the progress bar (with side padding
+        # and the percentage centred over it).
         px0, py0 = self.RAIL_W + 2, self.TOP_H + 2
         pw = 2 * bw - 4
         ph = self.height - self.STRIP_H - self.TOP_H - 4
-        ch = ph // 4
         cw = pw // 2
+        ch = (ph - 54) // 3
         cards = [
             ('fire', "%d/%d" % (ex['temperature'], ex['target']),
              self._temp_color(ex['temperature'], ex['target'])),
@@ -1318,7 +1334,7 @@ class ST7796:
             ('fan', "%d%%" % int(round(fansp)), COL_C3),
             ('extrude', "%d%%" % int(round(flow)), COL_C4),
             ('speed', "%d%%" % int(round(speed)), COL_C2),
-            ('zoffset', "%.1f/%.0f" % (zc, self._zmax()), COL_C1),
+            ('zoffset', lay, COL_C1),
         ]
         for i, (icon, val, col) in enumerate(cards):
             cx = px0 + (i % 2) * cw
@@ -1326,21 +1342,27 @@ class ST7796:
             draw = (not values_only) or (self._card_cols.get(i) != col)
             self._card_cols[i] = col
             self._card_ops(ops, cx, cy, cw, ch, icon, val, col, draw)
-        # Progress bar on the last row: full width blocks with the % in the
-        # middle (the label punches a small hole so it reads over the bar).
-        n = max(4, pw // 8)
+        # X / Y / Z
+        ops.append(lambda: self._gui_text_center(
+            px0, pw, py0 + 3 * ch + 2,
+            "X%.1f Y%.1f Z%.1f" % (xc, yc, zc), COL_WHITE, COL_BG, 1))
+        # Progress bar (side padding), percentage centred over it.
+        pad = 16
+        bwp = pw - 2 * pad
+        n = max(4, bwp // 8)
         f = int(round(prog * n))
-        bx = px0 + (pw - n * 8) // 2
-        by = py0 + 3 * ch + (ch - 16) // 2
+        bx = px0 + pad + (bwp - n * 8) // 2
+        by = py0 + 3 * ch + 20
         if f > 0:
             ops.append(lambda bx=bx, by=by, f=f: self._gui_text(
                 bx, by, "\xdb" * f, COL_C1, COL_BG, 1))
         if n - f > 0:
             ops.append(lambda bx=bx, by=by, f=f, n=n: self._gui_text(
                 bx + f * 8, by, "\xb0" * (n - f), COL_ACTIVE, COL_BG, 1))
-        ops.append(lambda by=by: self._gui_text_center(
-            px0, pw, by, "%d%%" % int(round(prog * 100)), COL_WHITE, COL_BG,
-            1))
+        pct = "%d%%" % int(round(prog * 100))
+        tx = bx + max(0, (n * 8 - len(pct) * 8) // 2)
+        ops.append(lambda tx=tx, by=by, pct=pct: self._gui_text(
+            tx, by, pct, COL_WHITE, COL_BG, 1))
         # Right hand buttons: pause/resume, cancel, tune, temperatures
         paused = ps['state'] == 'paused'
         for (x, y, w, h, idx) in self._print_btns():
