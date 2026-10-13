@@ -1299,10 +1299,6 @@ class ST7796:
             ops.append(lambda cx=cx, top=top, cw=cw, icon=icon, iw=iw, col=col:
                        self._gui_icon_at(icon, cx + (cw - iw) // 2, top, col,
                                          COL_BG, 22))
-        # colour accent line: always (re)drawn, it is a single rect
-        ops.append(lambda cx=cx, top=top, cw=cw, col=col:
-                   self.cmd_rect.send([cx + (cw - 44) // 2, top + 46, 44, 3,
-                                       col]))
         if val:
             ops.append(lambda cx=cx, top=top, cw=cw, val=val, col=col:
                        self._gui_text_center(cx, cw, top + 26,
@@ -1399,16 +1395,19 @@ class ST7796:
         # Right hand buttons: pause/resume, cancel, tune, temperatures
         paused = ps['state'] == 'paused'
         for (x, y, w, h, idx) in self._print_btns():
+            acc = self._gc(idx)
             if idx == 2:
                 self._btn_ops(ops, x, y, w, h,
                               'play48' if paused else 'pause48',
-                              "Retomar" if paused else "Pausa")
+                              "Retomar" if paused else "Pausa", accent=acc)
             elif idx == 3:
-                self._btn_ops(ops, x, y, w, h, 'x48', "Parar", COL_ERR)
+                self._btn_ops(ops, x, y, w, h, 'x48', "Parar", COL_ERR,
+                              accent=acc)
             elif idx == 6:
-                self._btn_ops(ops, x, y, w, h, 'settings', "Tune")
+                self._btn_ops(ops, x, y, w, h, 'settings', "Tune",
+                              accent=acc)
             elif idx == 7:
-                self._btn_ops(ops, x, y, w, h, 'thermo', "Temps")
+                self._btn_ops(ops, x, y, w, h, 'thermo', "Temps", accent=acc)
     def _gui_render(self, eventtime):
         if self._disp_quiet(eventtime) or self._gui_ops:
             self._gui_defer(eventtime)
@@ -1670,7 +1669,8 @@ class ST7796:
         except Exception:
             logging.exception("st7796: network announce failed")
             return None
-    def _btn_ops(self, ops, x, y, w, h, icon, label, col=COL_WHITE):
+    def _btn_ops(self, ops, x, y, w, h, icon, label, col=COL_WHITE,
+                 accent=None):
         g = self.gui_btn_gap
         i2 = g // 2
         bx, by, bw2, bh2 = x + i2, y + i2, w - g, h - g
@@ -1686,6 +1686,10 @@ class ST7796:
         ops.append(lambda bx=bx, bw2=bw2, ty=ty, label=label:
                    self._gui_text_center(bx, bw2, ty, label, COL_WHITE,
                                          self.gui_btn_bg, 1))
+        if accent is not None:
+            ops.append(lambda bx=bx, by=by, bw2=bw2, bh2=bh2, accent=accent:
+                       self.cmd_rect.send([bx + 10, by + bh2 - 13, bw2 - 20, 5,
+                                           accent]))
     def _net_view_ops(self, ops, eventtime):
         info = self._net_info()
         bw = (self.width - self.RAIL_W) // 4
