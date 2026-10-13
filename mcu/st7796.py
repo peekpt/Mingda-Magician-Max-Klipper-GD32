@@ -963,12 +963,13 @@ class ST7796:
         if cur >= tgt - 3.:
             return COL_OK
         return COL_HEAT
-    def _gui_heater(self, icon, iy, tx, st, ty=7):
+    def _gui_heater(self, icon, iy, tx, st):
         cur = st['temperature']
         tgt = st['target']
         col = self._temp_color(cur, tgt)
         self._gui_icon_at(icon, tx - 28, iy, col, self.gui_bar_bg, 20)
-        self._gui_text(tx, ty, "%d>%d" % (cur, tgt), col, self.gui_bar_bg, 1)
+        self._gui_text(tx, 7, ("%d>%d" % (cur, tgt)).ljust(7), col,
+                       self.gui_bar_bg, 1)
     def _filament_status(self, eventtime):
         try:
             st = self.printer.lookup_object(
@@ -977,17 +978,30 @@ class ST7796:
             return bool(st.get('enabled')), bool(st.get('filament_detected'))
         except Exception:
             return None, None
-    def _gui_topbar(self, eventtime):
-        self.cmd_rect.send([0, 0, self.width, self.TOP_H, self.gui_bar_bg])
-        try:
-            nb = self.printer.lookup_object('extruder').get_status(eventtime)
-            bd = self.printer.lookup_object('heater_bed').get_status(eventtime)
-        except Exception:
-            return
-        self._gui_heater('nozzle', 9, 34, nb)
-        self._gui_heater('bed', 7, 130, bd)
-        self._gui_text_center(0, self.width, 7, self.gui_screen.capitalize(),
-                              COL_WHITE, self.gui_bar_bg, 1)
+    def _gui_topbar(self, eventtime, fill=True):
+        bg = self.gui_bar_bg
+        if fill:
+            self.cmd_rect.send([0, 0, self.width, self.TOP_H, bg])
+        ps = self._print_status(eventtime)
+        printing = ps is not None and ps['state'] in ('printing', 'paused')
+        if self.gui_screen == 'print' and printing:
+            # While printing the top bar shows the file name instead of the
+            # temperatures (those are in the info panel).
+            fname = os.path.basename(ps.get('filename') or '') or '-'
+            self._gui_text(6, 7, (fname + ' ' * 26)[:26], COL_WHITE, bg, 1)
+        else:
+            try:
+                nb = self.printer.lookup_object('extruder').get_status(
+                    eventtime)
+                bd = self.printer.lookup_object('heater_bed').get_status(
+                    eventtime)
+            except Exception:
+                return
+            self._gui_heater('nozzle', 9, 34, nb)
+            self._gui_heater('bed', 7, 120, bd)
+        self._gui_text_center(0, self.width, 7,
+                              (self.gui_screen.capitalize() + ' ' * 14)[:14],
+                              COL_WHITE, bg, 1)
         try:
             dur = int(self.printer.lookup_object('print_stats').get_status(
                 eventtime)['print_duration'])
@@ -995,7 +1009,7 @@ class ST7796:
             dur = 0
         self._gui_text(self.width - 52, 7,
                        "%02d:%02d" % (dur // 3600, (dur // 60) % 60),
-                       COL_WHITE, self.gui_bar_bg, 1)
+                       COL_WHITE, bg, 1)
         # Filament runout indicator: green = filament ok, red = runout,
         # grey = sensor disabled/unavailable.
         en, det = self._filament_status(eventtime)
@@ -1004,11 +1018,12 @@ class ST7796:
             fcol = COL_OK
         elif en and not det:
             fcol = COL_ERR
-        self._gui_icon_at('extrude', self.width - 78, 8, fcol,
-                          self.gui_bar_bg, 18)
-    def _gui_bottombar(self, eventtime):
+        self._gui_icon_at('extrude', self.width - 78, 8, fcol, bg, 18)
+    def _gui_bottombar(self, eventtime, fill=True):
+        bg = self.gui_bar_bg
         y = self.height - self.STRIP_H
-        self.cmd_rect.send([0, y, self.width, self.STRIP_H, self.gui_bar_bg])
+        if fill:
+            self.cmd_rect.send([0, y, self.width, self.STRIP_H, bg])
         strip = self._gui_strip()
         if strip:
             for (x, yy, w, h, lab, val) in strip:
@@ -1035,8 +1050,9 @@ class ST7796:
                                                                    ''))
                     except Exception:
                         msg = ''
-            self._gui_text_center(0, self.width, y + 9, str(msg)[:56], fg,
-                                  self.gui_bar_bg, 1)
+            self._gui_text_center(0, self.width, y + 9,
+                                  (str(msg)[:60] + ' ' * 60)[:60], fg,
+                                  bg, 1)
     def _gui_bars(self, eventtime):
         sampled = False
         now = self.printer.get_reactor().monotonic()
@@ -1053,13 +1069,18 @@ class ST7796:
             if len(self._t_hist) > 60:
                 self._t_hist.pop(0)
             sampled = True
-        if (sampled and self.gui_screen == 'print'
-                and self._print_view(eventtime)):
-            self._gui_defer(eventtime, 0.05)      # refresh the graphs
         if self._gui_ops:
             return
-        self._gui_enqueue([lambda et=eventtime: self._gui_topbar(et),
-                           lambda et=eventtime: self._gui_bottombar(et)])
+        if (sampled and self.gui_screen == 'print'
+                and self._print_view(eventtime)):
+            # Refresh just the info panel (icons/values), not the whole screen.
+            pop = []
+            self._print_view_ops(pop, eventtime)
+            self._gui_enqueue(pop)
+            return
+        self._gui_enqueue([lambda et=eventtime: self._gui_topbar(et, False),
+                           lambda et=eventtime: self._gui_bottombar(et,
+                                                                    False)])
     def _gui_enqueue(self, ops):
         # Drain the draw commands a few at a time (see _gui_drain): sending a
         # whole redraw synchronously blocks the reactor for ~50ms, which starves
@@ -1237,7 +1258,8 @@ class ST7796:
                                      COL_BG, 22))
         if val:
             ops.append(lambda cx=cx, cy=cy, cw=cw, val=val, col=col:
-                       self._gui_text_center(cx, cw, cy + ch - 21, val, col,
+                       self._gui_text_center(cx, cw, cy + ch - 21,
+                                             (val + ' ' * 9)[:9], col,
                                              COL_BG, 1))
     def _print_view_ops(self, ops, eventtime):
         ps = self._print_status(eventtime)
