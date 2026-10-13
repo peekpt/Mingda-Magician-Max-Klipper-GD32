@@ -1982,6 +1982,8 @@ class ST7796:
                                 "GUI: %s" % ("Retomar" if paused else "Pausa"))
                             self._gui_do('RESUME' if paused else 'PAUSE',
                                          eventtime)
+                            # redraw soon so the button flips pause/play
+                            self._gui_defer(eventtime, 0.8)
                         elif idx == 3:
                             self.gcode.respond_info("GUI: Parar")
                             self._gui_do('CANCEL_PRINT', eventtime)
