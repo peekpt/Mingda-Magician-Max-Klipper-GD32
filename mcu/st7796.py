@@ -1193,10 +1193,14 @@ class ST7796:
                                          by + (bh - isz) // 2, COL_WHITE,
                                          self.gui_btn_bg, isz))
             if kind == 'print':
-                # green accent line under the print button
-                ops.append(lambda bx=bx, by=by, bw=bw, bh=bh:
-                           self.cmd_rect.send([bx + 10, by + bh - 9, bw - 20,
-                                               4, COL_OK]))
+                lcol = COL_OK              # green accent line for print
+            elif kind == 'down':
+                lcol = COL_C3
+            else:
+                lcol = COL_C1
+            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, lcol=lcol:
+                       self.cmd_rect.send([bx + 10, by + bh - 9, bw - 20, 4,
+                                           lcol]))
     def _list_press(self, kind, eventtime):
         if kind == 'up':
             self._sd_sel = max(0, self._sd_sel - 1)
@@ -1280,9 +1284,10 @@ class ST7796:
             ops.append(lambda cx=cx, top=top, cw=cw, icon=icon, iw=iw, col=col:
                        self._gui_icon_at(icon, cx + (cw - iw) // 2, top, col,
                                          COL_BG, 22))
-            ops.append(lambda cx=cx, top=top, cw=cw, col=col:
-                       self.cmd_rect.send([cx + (cw - 44) // 2, top + 46, 44, 3,
-                                           col]))
+        # colour accent line: always (re)drawn, it is a single rect
+        ops.append(lambda cx=cx, top=top, cw=cw, col=col:
+                   self.cmd_rect.send([cx + (cw - 44) // 2, top + 46, 44, 3,
+                                       col]))
         if val:
             ops.append(lambda cx=cx, top=top, cw=cw, val=val, col=col:
                        self._gui_text_center(cx, cw, top + 26,
