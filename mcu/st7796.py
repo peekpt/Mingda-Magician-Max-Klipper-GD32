@@ -5,9 +5,12 @@
 # goes over the serial link.
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import glob
 import logging
 import os
 import re
+import socket
+import subprocess
 from . import tft_icons
 
 TextGlyphs = {'right_arrow': b'\x1a', 'degrees': b'\xf8'}
@@ -85,12 +88,25 @@ GUI_SCREENS = {
     ],
     # 'print' is built dynamically from the virtual SD files (see _print_items)
     'print': [],
+    'tune': [
+        ("Fan +", "fan", ('tune', 'fan', 1)),
+        ("Flow +", "extrude", ('tune', 'flow', 1)),
+        ("Speed +", "speed", ('tune', 'speed', 1)),
+        ("Bico +", "fire", ('tune', 'etemp', 1)),
+        ("Cama +", "bed", ('tune', 'btemp', 1)),
+        ("Fan -", "fan", ('tune', 'fan', -1)),
+        ("Flow -", "extrude", ('tune', 'flow', -1)),
+        ("Speed -", "speed", ('tune', 'speed', -1)),
+        ("Bico -", "fire", ('tune', 'etemp', -1)),
+        ("Cama -", "bed", ('tune', 'btemp', -1)),
+    ],
+    'network': [],
     'more': [
         ("PID hot", "fire", 'PID_CALIBRATE HEATER=extruder TARGET=200'),
         ("PID bed", "bed", 'PID_CALIBRATE HEATER=heater_bed TARGET=60'),
         ("Guardar", "save", 'SAVE_CONFIG'),
-        ("Fan 100", "fan", 'M106 S255'),
         ("Filam", "extrude", ('fsens',)),
+        ("Rede", "network", ('scr', 'network')),
         ("Beep", "alert", ('beep',)),
         ("Motores OFF", "power", 'M84'),
         ("Voltar", "back", ('scr', 'main')),
@@ -105,6 +121,9 @@ GUI_STRIP = {
     'print': [("Pausa", 'PAUSE'), ("Retomar", 'RESUME'),
               ("Cancelar", 'CANCEL_PRINT')],
 }
+
+# Screens that use a different grid width (default 4 columns x 2 rows)
+GUI_COLS = {'tune': 5}
 
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
 ICON = 0x100
@@ -215,6 +234,8 @@ class ST7796:
                                desc="Compare big-rect vs narrow-strip fills")
         gcode.register_command('TFT_GUI', self.cmd_TFT_GUI,
                                desc="Force a full GUI redraw")
+        gcode.register_command('TFT_NET', self.cmd_TFT_NET,
+                               desc="Show network info / send SSDP announce")
         # Touch (XPT2046)
         self.gcode = gcode
         self.touch_enable = config.getboolean('touch', True)
@@ -249,6 +270,9 @@ class ST7796:
         self._t_hist = []
         self._t_last = 0.
         self._last_ps_state = 'ready'
+        self._zmax_v = 0.
+        self._net_cache = None
+        self._net_t = 0.
         self._corners = (_make_corner(self.gui_radius, False, False),
                          _make_corner(self.gui_radius, True, False),
                          _make_corner(self.gui_radius, False, True),
@@ -587,9 +611,21 @@ class ST7796:
             x += n
         self._gui_text(6, 6, "1 RECT", 0xFFFF, c)
         self._gui_text(half + 6, 6, "STRIPS W=%d" % w, 0xFFFF, c)
+    def cmd_TFT_NET(self, gcmd):
+        if gcmd.get_int('ANNOUNCE', 0):
+            info = self._net_info()
+            ip = self._net_announce()
+            gcmd.respond_info("announce (SSDP) -> %s" % ip)
+        i = self._net_info()
+        gcmd.respond_info("net: ssid=%s ip=%s sinal=%s host=%s"
+                          % (i['ssid'], i['ip'], i['qual'], i['host']))
     def cmd_TFT_GUI(self, gcmd):
-        if self.gui:
-            self._gui_pending = self.printer.get_reactor().monotonic()
+        if not self.gui:
+            return
+        scr = gcmd.get('SCREEN', None)
+        if scr:
+            self.gui_screen = scr
+        self._gui_pending = self.printer.get_reactor().monotonic()
     # --- touch (XPT2046 -> Klipper menu gestures) ---
     def _get_menu(self):
         if self.menu is None:
@@ -898,7 +934,7 @@ class ST7796:
             return []
         return GUI_SCREENS.get(self.gui_screen, [])
     def _gui_buttons(self):
-        cols, rows = 4, 2
+        cols, rows = GUI_COLS.get(self.gui_screen, 4), 2
         x0, y0 = self.RAIL_W, self.TOP_H
         x1, y1 = self.width, self.height - self.STRIP_H
         bw = (x1 - x0) // cols
@@ -911,7 +947,9 @@ class ST7796:
                         bw, bh, idx, item))
         return out
     def _gui_rail(self):
-        items = [('back24', ('scr', 'main')), ('home24', ('scr', 'main')),
+        back = ('scr', 'print') if self.gui_screen == 'tune' \
+            else ('scr', 'main')
+        items = [('back24', back), ('home24', ('scr', 'main')),
                  ('files24', ('scr', 'print')), ('alert24', None)]
         n = len(items)
         area = self.height - self.STRIP_H - self.TOP_H
@@ -1155,13 +1193,12 @@ class ST7796:
         ps = self._print_status(eventtime)
         return ps is not None and ps['state'] in ('printing', 'paused')
     def _print_btns(self):
-        x0, y0, x1, y1 = self._list_area()
-        bw = bh = 64
-        bx = x1 + (self.RIGHT_W - bw) // 2
-        gap = 20
-        by = y0 + max(0, (y1 - y0 - (2 * bh + gap)) // 2)
-        return [(bx, by, bw, bh, 'pause'),
-                (bx, by + bh + gap, bw, bh, 'stop')]
+        # The four grid slots on the right hand side (2x2), as (x,y,w,h,idx).
+        out = []
+        for (x, y, w, h, idx, item) in self._gui_buttons():
+            if idx in (2, 3, 6, 7):
+                out.append((x, y, w, h, idx))
+        return out
     def _graph_ops(self, ops, gx, gy, gw, gh, series, tgt, color, label, cur):
         ops.append(lambda gx=gx, gy=gy, gw=gw, gh=gh:
                    self.cmd_rect.send([gx, gy, gw, gh, self.gui_bar_bg]))
@@ -1185,57 +1222,109 @@ class ST7796:
                    self._gui_text(gx + 4, gy + 2, "%s %d>%d" % (label, cur,
                                                                 tgt),
                                   COL_WHITE, self.gui_bar_bg, 1))
+    def _zmax(self):
+        if self._zmax_v:
+            return self._zmax_v
+        try:
+            s = self.printer.lookup_object('configfile').get_status(0)[
+                'settings']
+            self._zmax_v = float(s['stepper_z']['position_max'])
+        except Exception:
+            self._zmax_v = 0.
+        return self._zmax_v
+    def _info_line(self, ops, x, y, xr, lab, val, col):
+        # Vertical colour bar, label, right aligned value.
+        ops.append(lambda x=x, y=y, col=col: self.cmd_rect.send(
+            [x, y + 6, 5, 22, col]))
+        ops.append(lambda x=x, y=y, lab=lab: self._gui_text(
+            x + 14, y + 9, lab, COL_WHITE, COL_BG, 1))
+        if val:
+            vw = len(val) * 8
+            ops.append(lambda xr=xr, y=y, val=val, vw=vw, col=col:
+                       self._gui_text(xr - vw, y + 9, val, col, COL_BG, 1))
     def _print_view_ops(self, ops, eventtime):
         ps = self._print_status(eventtime)
         if ps is None:
             return
-        x0, y0, x1, y1 = self._list_area()
-        w = x1 - x0
+        bw = (self.width - self.RAIL_W) // 4
+        ix0 = self.RAIL_W + 2
+        ix1 = self.RAIL_W + 2 * bw - 6
+        iy0 = self.TOP_H
+        iy1 = self.height - self.STRIP_H
         try:
-            vsd = self.printer.lookup_object('virtual_sdcard')
-            prog = float(vsd.get_status(eventtime).get('progress') or 0.)
+            ex = self.printer.lookup_object('extruder').get_status(eventtime)
+            bd = self.printer.lookup_object('heater_bed').get_status(eventtime)
+            gm = self.printer.lookup_object('gcode_move').get_status(eventtime)
+            fn = self.printer.lookup_object('fan').get_status(eventtime)
+        except Exception:
+            return
+        prog = 0.
+        try:
+            prog = float(self.printer.lookup_object('virtual_sdcard')
+                         .get_status(eventtime).get('progress') or 0.)
         except Exception:
             prog = 0.
         if not prog:
             prog = float(ps.get('progress') or 0.)
         prog = min(1., max(0., prog))
-        fname = os.path.basename(ps.get('filename') or '') or '-'
-        ops.append(lambda: self._gui_text_center(
-            x0, w, y0 + 2, "%d%%  %s" % (int(prog * 100), fname[:34]),
-            COL_WHITE, COL_BG, 1))
-        ops.append(lambda: self._gui_round(x0 + 2, y0 + 22, w - 4, 26,
-                                           self.gui_btn_bg))
-        fill = int((w - 10) * prog)
-        if fill > 0:
-            ops.append(lambda fill=fill: self.cmd_rect.send(
-                [x0 + 5, y0 + 25, fill, 20, COL_C1]))
-        gh = max(40, (y1 - (y0 + 54) - 6) // 2)
-        gx, gw = x0 + 2, w - 4
-        g1y = y0 + 54
-        g2y = g1y + gh + 6
         try:
-            ex = self.printer.lookup_object('extruder').get_status(eventtime)
-            bd = self.printer.lookup_object('heater_bed').get_status(eventtime)
+            zc = float(gm['gcode_position'][2])
         except Exception:
-            return
-        ext = [s[0] for s in self._t_hist]
-        bed = [s[1] for s in self._t_hist]
-        self._graph_ops(ops, gx, g1y, gw, gh, ext, ex['target'], COL_C1,
-                        "Bico", int(ex['temperature']))
-        self._graph_ops(ops, gx, g2y, gw, gh, bed, bd['target'], COL_C2,
-                        "Cama", int(bd['temperature']))
+            zc = 0.
+        speed = float(gm.get('speed_factor') or 1.) * 100.
+        flow = float(gm.get('extrude_factor') or 1.) * 100.
+        fansp = float(fn.get('speed') or 0.) * 100.
+        zm = self._zmax()
+        lines = [
+            ("Bico", "%d/%d" % (ex['temperature'], ex['target']),
+             self._temp_color(ex['temperature'], ex['target'])),
+            ("Cama", "%d/%d" % (bd['temperature'], bd['target']),
+             self._temp_color(bd['temperature'], bd['target'])),
+            ("Fan", "%d%%" % int(round(fansp)), COL_C3),
+            ("Flow", "%d%%" % int(round(flow)), COL_C4),
+            ("Speed", "%d%%" % int(round(speed)), COL_C2),
+            ("Z", "%.1f/%.0f   %d%%" % (zc, zm, int(prog * 100)), COL_C1),
+        ]
+        line_h = max(26, (iy1 - iy0 - 30) // max(1, len(lines)))
+        for i, (lab, val, col) in enumerate(lines):
+            self._info_line(ops, ix0, iy0 + i * line_h, ix1, lab, val, col)
+        # Thin progress line under the list
+        py = iy0 + len(lines) * line_h + 4
+        pw = ix1 - ix0
+        ops.append(lambda py=py, pw=pw: self.cmd_rect.send(
+            [ix0, py, pw, 6, self.gui_btn_bg]))
+        fw = int(pw * prog)
+        if fw > 0:
+            ops.append(lambda py=py, fw=fw: self.cmd_rect.send(
+                [ix0, py, fw, 6, COL_C1]))
+        # Right hand buttons: pause/resume, cancel, tune (4th slot is empty)
         paused = ps['state'] == 'paused'
-        for (bx, by, bw, bh, kind) in self._print_btns():
-            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh:
-                       self._gui_round(bx, by, bw, bh, self.gui_btn_bg))
-            icon = ('play48' if paused else 'pause48') if kind == 'pause' \
-                else 'x48'
-            col = COL_WHITE if kind == 'pause' else COL_ERR
-            iw, ih = EXTRA_ICONS[icon][:2]
-            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, icon=icon, col=col,
-                       iw=iw, ih=ih: self._gui_icon(
-                           icon, bx + (bw - iw) // 2, by + (bh - ih) // 2,
-                           col, self.gui_btn_bg))
+        g = self.gui_btn_gap
+        i2 = g // 2
+        for (x, y, w, h, idx) in self._print_btns():
+            if idx == 7:
+                continue                      # reserved / empty
+            bx, by, bw2, bh2 = x + i2, y + i2, w - g, h - g
+            if idx == 2:
+                icon = 'play48' if paused else 'pause48'
+                label, col = ("Retomar" if paused else "Pausa"), COL_WHITE
+            elif idx == 3:
+                icon, label, col = 'x48', "Parar", COL_ERR
+            else:
+                icon, label, col = 'settings', "Tune", COL_WHITE
+            sc = self._scaled_icon(icon)
+            iw, ih = (sc[0], sc[1]) if sc else (0, 0)
+            iy = by + max(4, (bh2 - (ih + 8 + 16)) // 2)
+            ty = iy + ih + 8
+            ops.append(lambda bx=bx, by=by, bw2=bw2, bh2=bh2:
+                       self._gui_round(bx, by, bw2, bh2, self.gui_btn_bg))
+            ops.append(lambda bx=bx, bw2=bw2, iy=iy, icon=icon, iw=iw,
+                       col=col: self._gui_icon(
+                           icon, bx + (bw2 - iw) // 2, iy, col,
+                           self.gui_btn_bg))
+            ops.append(lambda bx=bx, bw2=bw2, ty=ty, label=label:
+                       self._gui_text_center(bx, bw2, ty, label, COL_WHITE,
+                                             self.gui_btn_bg, 1))
     def _gui_render(self, eventtime):
         if self._disp_quiet(eventtime) or self._gui_ops:
             self._gui_defer(eventtime)
@@ -1258,6 +1347,8 @@ class ST7796:
                 self._print_view_ops(ops, eventtime)
             else:
                 self._gui_list_ops(ops)
+        elif self.gui_screen == 'network':
+            self._net_view_ops(ops, eventtime)
         g = self.gui_btn_gap
         i2 = g // 2
         for (x, y, w, h, idx, item) in self._gui_buttons():
@@ -1320,7 +1411,7 @@ class ST7796:
     _MOVE_TOKENS = ('G28', 'G29', 'G1', 'G2', 'G3', 'SDCARD_PRINT_FILE',
                     'PROBE_CALIBRATE', 'BED_MESH_CALIBRATE', 'TESTZ',
                     'LOAD_FILAMENT', 'UNLOAD_FILAMENT', 'RESTART',
-                    'CANCEL_PRINT')
+                    'CANCEL_PRINT', 'SET_GCODE_OFFSET')
     def _gui_run_action(self, script):
         # Run GUI gcode in one serialised greenlet (beep + action together), so
         # two actions never interleave, and mark the display busy meanwhile.
@@ -1371,6 +1462,157 @@ class ST7796:
         self._gui_next = 0.          # refresh the bottom bar on the next poll
         if self.gui_beep and not self._gui_action_active:
             self._gui_run_action("M300 S400 P150")
+    # --- tune / network helpers -------------------------------------------
+    def _tune_gcode(self, what, sign, eventtime):
+        gm = self.printer.lookup_object('gcode_move').get_status(eventtime)
+        if what == 'fan':
+            s = float(self.printer.lookup_object('fan').get_status(
+                eventtime).get('speed') or 0.)
+            s = max(0., min(1., s + sign * 0.2))
+            return "M106 S%d" % int(round(s * 255))
+        if what == 'flow':
+            f = float(gm.get('extrude_factor') or 1.) + sign * 0.05
+            return "M221 S%d" % int(round(max(0.5, min(2.0, f)) * 100))
+        if what == 'speed':
+            f = float(gm.get('speed_factor') or 1.) + sign * 0.05
+            return "M220 S%d" % int(round(max(0.25, min(2.0, f)) * 100))
+        if what == 'etemp':
+            t = self.printer.lookup_object('extruder').get_status(
+                eventtime)['target'] + sign * 5.
+            return "M104 S%d" % int(max(0., min(270., t)))
+        if what == 'btemp':
+            t = self.printer.lookup_object('heater_bed').get_status(
+                eventtime)['target'] + sign * 5.
+            return "M140 S%d" % int(max(0., min(120., t)))
+        return None
+    def _net_info(self):
+        now = self.printer.get_reactor().monotonic()
+        if self._net_cache is not None and now - self._net_t < 10.:
+            return self._net_cache
+        self._net_t = now
+        info = {'ssid': '-', 'ip': '-', 'qual': -1,
+                'host': socket.gethostname() + '.local'}
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(('8.8.8.8', 80))
+                info['ip'] = s.getsockname()[0]
+            finally:
+                s.close()
+        except Exception:
+            pass
+        try:
+            with open('/proc/net/wireless') as f:
+                lines = f.read().splitlines()[2:]
+            for line in lines:
+                p = line.replace(':', ' ').split()
+                if len(p) >= 4:
+                    try:
+                        info['qual'] = min(100, int(
+                            float(p[2].rstrip('.')) * 100 / 70))
+                    except Exception:
+                        pass
+                    ssid = self._ssid()
+                    if ssid:
+                        info['ssid'] = ssid
+                    break
+        except Exception:
+            pass
+        self._net_cache = info
+        return info
+    def _ssid(self):
+        # NetworkManager first (the usual source on current Raspberry Pi OS).
+        try:
+            out = subprocess.run(['nmcli', '-t', '-f', 'active,ssid', 'dev',
+                                  'wifi'], capture_output=True, timeout=3)
+            for line in out.stdout.decode(errors='ignore').splitlines():
+                if line.startswith('yes:'):
+                    return line.split(':', 1)[1].strip()
+        except Exception:
+            pass
+        try:
+            for p in glob.glob('/etc/NetworkManager/system-connections/*'):
+                with open(p) as f:
+                    m = re.search(r'^ssid=(.+)$', f.read(), re.M)
+                if m:
+                    return m.group(1).strip()
+        except Exception:
+            pass
+        try:
+            with open('/etc/wpa_supplicant/wpa_supplicant.conf') as f:
+                m = re.search(r'ssid="([^"]+)"', f.read())
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+        return None
+    def _net_announce(self):
+        # SSDP NOTIFY - announce this printer to UPnP/SSDP browsers on the LAN.
+        try:
+            info = self._net_info()
+            ip = info.get('ip') or '0.0.0.0'
+            uid = 'uuid:4b6c6970-7065-7200-0000-4d696e676461'
+            msgs = []
+            for nt in ('upnp:rootdevice', uid,
+                       'urn:schemas-upnp-org:device:basic:1'):
+                msgs.append(
+                    'NOTIFY * HTTP/1.1\r\n'
+                    'HOST: 239.255.255.250:1900\r\n'
+                    'CACHE-CONTROL: max-age=1800\r\n'
+                    'LOCATION: http://%s:7125/\r\n'
+                    'SERVER: Klipper/Moonraker UPnP/1.0\r\n'
+                    'NT: %s\r\nNTS: ssdp:alive\r\n'
+                    'USN: %s::%s\r\n\r\n' % (ip, nt, uid, nt))
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+                for m in msgs:
+                    s.sendto(m.encode(), ('239.255.255.250', 1900))
+            finally:
+                s.close()
+            return ip
+        except Exception:
+            logging.exception("st7796: network announce failed")
+            return None
+    def _btn_ops(self, ops, x, y, w, h, icon, label, col=COL_WHITE):
+        g = self.gui_btn_gap
+        i2 = g // 2
+        bx, by, bw2, bh2 = x + i2, y + i2, w - g, h - g
+        sc = self._scaled_icon(icon)
+        iw, ih = (sc[0], sc[1]) if sc else (0, 0)
+        iy = by + max(4, (bh2 - (ih + 8 + 16)) // 2)
+        ty = iy + ih + 8
+        ops.append(lambda bx=bx, by=by, bw2=bw2, bh2=bh2:
+                   self._gui_round(bx, by, bw2, bh2, self.gui_btn_bg))
+        ops.append(lambda bx=bx, bw2=bw2, iy=iy, icon=icon, iw=iw, col=col:
+                   self._gui_icon(icon, bx + (bw2 - iw) // 2, iy, col,
+                                  self.gui_btn_bg))
+        ops.append(lambda bx=bx, bw2=bw2, ty=ty, label=label:
+                   self._gui_text_center(bx, bw2, ty, label, COL_WHITE,
+                                         self.gui_btn_bg, 1))
+    def _net_view_ops(self, ops, eventtime):
+        info = self._net_info()
+        bw = (self.width - self.RAIL_W) // 4
+        ix0 = self.RAIL_W + 2
+        ix1 = self.RAIL_W + 2 * bw - 6
+        iy0 = self.TOP_H
+        q = info['qual']
+        lines = [
+            ("SSID", str(info['ssid'])[:18], COL_C1),
+            ("IP", str(info['ip']), COL_C3),
+            ("Sinal", ("%d%%" % q) if q >= 0 else "-", COL_C4),
+            ("Host", str(info['host']), COL_C2),
+            ("Porta", "7125 (Moonraker)", COL_ACTIVE),
+        ]
+        line_h = max(26, (self.height - self.STRIP_H - iy0 - 30)
+                     // max(1, len(lines)))
+        for i, (lab, val, col) in enumerate(lines):
+            self._info_line(ops, ix0, iy0 + i * line_h, ix1, lab, val, col)
+        for (x, y, w, h, idx, item) in self._gui_buttons():
+            if idx == 2:
+                self._btn_ops(ops, x, y, w, h, 'network', "Anunciar")
+            elif idx == 3:
+                self._btn_ops(ops, x, y, w, h, 'back', "Voltar")
     def _gui_do(self, action, eventtime):
         script = None
         if isinstance(action, tuple) and action[0] == 'scr':
@@ -1387,6 +1629,17 @@ class ST7796:
             i = self._ext_steps.index(self._ext_step)
             self._ext_step = self._ext_steps[(i + 1) % len(self._ext_steps)]
             self._gui_render(eventtime)
+        elif isinstance(action, tuple) and action[0] == 'tune':
+            script = self._tune_gcode(action[1], action[2], eventtime)
+            if script:
+                self.gcode.respond_info("GUI tune: %s" % script)
+        elif isinstance(action, tuple) and action[0] == 'net':
+            ip = self._net_announce()
+            if ip:
+                self.gcode.respond_info(
+                    "st7796: anuncio SSDP enviado na rede (%s)" % ip)
+            else:
+                self._gui_warn("Falha ao anunciar na rede")
         elif isinstance(action, tuple) and action[0] == 'fsens':
             en, det = self._filament_status(eventtime)
             new = 0 if en else 1
@@ -1417,7 +1670,8 @@ class ST7796:
             self.gcode.respond_info("GUI move: %s" % script.replace('\n', ' '))
         elif action:
             script = action
-        if script and script.strip().upper().startswith('M84'):
+        if isinstance(script, str) and script.strip().upper().startswith(
+                'M84'):
             try:
                 st = self.printer.lookup_object('print_stats').get_status(
                     eventtime)['state']
@@ -1426,7 +1680,7 @@ class ST7796:
             if st in ('printing', 'paused'):
                 self._gui_warn("Impressao em curso - M84 bloqueado")
                 return
-        if (script and self.extrude_min_temp > 0
+        if (isinstance(script, str) and self.extrude_min_temp > 0
                 and self._needs_hot_end(script)):
             temp = self._nozzle_temp(eventtime)
             if temp is not None and temp < self.extrude_min_temp:
@@ -1455,20 +1709,32 @@ class ST7796:
                     self._gui_run_action(
                         "M300 S1000 P60" if self.gui_beep else None)
                 return
+        if self.gui_screen == 'network':
+            for (x, y, w, h, idx, item) in self._gui_buttons():
+                if x <= sx < x + w and y <= sy < y + h:
+                    if idx == 2:
+                        self.gcode.respond_info("GUI: Anunciar")
+                        self._gui_do(('net', 'announce'), eventtime)
+                    elif idx == 3:
+                        self._gui_do(('scr', 'more'), eventtime)
+                    return
         if self.gui_screen == 'print':
             if self._print_view(eventtime):
                 ps = self._print_status(eventtime) or {}
                 paused = ps.get('state') == 'paused'
-                for (bx, by, bw, bh, kind) in self._print_btns():
-                    if bx <= sx < bx + bw and by <= sy < by + bh:
-                        if kind == 'pause':
+                for (x, y, w, h, idx) in self._print_btns():
+                    if x <= sx < x + w and y <= sy < y + h:
+                        if idx == 2:
                             self.gcode.respond_info(
                                 "GUI: %s" % ("Retomar" if paused else "Pausa"))
                             self._gui_do('RESUME' if paused else 'PAUSE',
                                          eventtime)
-                        else:
-                            self.gcode.respond_info("GUI: Cancelar")
+                        elif idx == 3:
+                            self.gcode.respond_info("GUI: Parar")
                             self._gui_do('CANCEL_PRINT', eventtime)
+                        elif idx == 6:
+                            self.gcode.respond_info("GUI: Tune")
+                            self._gui_do(('scr', 'tune'), eventtime)
                         return
             else:
                 for (bx, by, bw, bh, kind) in self._list_btns():
