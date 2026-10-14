@@ -312,6 +312,13 @@ class ST7796:
         self._gui_beat = 0.
         self._gui_err = None
         self._gui_err_until = 0.
+        self._ic_ids = {}
+        self._ic_bytes = 0
+        # Only cache icons up to this many bytes (the first firmware build
+        # truncated the length to 8 bits, so >255 byte icons were not drawn).
+        self._ic_max = config.getint('icon_cache_max', 250, minval=0)
+        self._touch_evt = False
+        self.cmd_idef = self.cmd_idraw = self.cmd_str = self.cmd_tcfg = None
         gcode.register_output_handler(self._gui_output)
         self._ptune = 'flow'
         self._card_cols = {}
@@ -422,6 +429,16 @@ class ST7796:
             "tft_char x=%hu y=%hu scale=%c ch=%c fg=%hu bg=%hu")
         self.cmd_icon = self.mcu.try_lookup_command(
             "tft_icon x=%hu y=%hu w=%hu h=%hu fg=%hu bg=%hu data=%*s")
+        # Optional fast paths (new firmware): icon cache, string draws and
+        # event driven touch.
+        self.cmd_idef = self.mcu.try_lookup_command(
+            "tft_idef id=%c w=%hu h=%hu off=%hu data=%*s")
+        self.cmd_idraw = self.mcu.try_lookup_command(
+            "tft_idraw id=%c x=%hu y=%hu fg=%hu bg=%hu")
+        self.cmd_str = self.mcu.try_lookup_command(
+            "tft_str x=%hu y=%hu scale=%c text=%*s fg=%hu bg=%hu")
+        self.cmd_tcfg = self.mcu.try_lookup_command(
+            "tft_touch_cfg threshold=%hu period=%hu")
         if None in (self.cmd_cmd, self.cmd_data, self.cmd_rect, self.cmd_char):
             logging.info("st7796: MCU has no tft_* commands (flash the display"
                          " firmware); display disabled for now")
@@ -473,6 +490,19 @@ class ST7796:
         except Exception:
             self.query_touch = None
             logging.info("st7796: touch query not available")
+        # Event driven touch: the MCU samples the panel and reports changes, so
+        # the host never has to poll (no blocking queries on the serial link).
+        if self.cmd_tcfg is not None and self.query_touch is not None:
+            try:
+                self.cmd_tcfg.send([int(self.touch_threshold), 25000])
+                self.mcu.register_serial_response(
+                    self._touch_report,
+                    "tft_touch_result x=%hu y=%hu z=%hu xr=%hu yr=%hu")
+                self._touch_evt = True
+                logging.info("st7796: event driven touch enabled")
+            except Exception:
+                self._touch_evt = False
+                logging.exception("st7796: event driven touch setup failed")
         self.cmd_bmp = self.mcu.try_lookup_command(
             "tft_bmp x=%hu y=%hu w=%hu rows=%c rowoff=%c fg=%hu bg=%hu"
             " data=%*s")
@@ -700,7 +730,10 @@ class ST7796:
             return eventtime + 0.2
         if self._touch_evt:
             # The MCU samples the panel itself (tft_touch_cfg) and only reports
-            # changes - nothing to poll, so no blocking query.
+            # changes - nothing to poll, so no blocking query. The periodic GUI
+            # work (bars, print-start detection) still has to run here.
+            if self.gui:
+                self._gui_periodic(eventtime)
             return eventtime + 0.05
         try:
             resp = self.query_touch.send([])
@@ -717,6 +750,23 @@ class ST7796:
                                params.get('z', 0), et)
         except Exception:
             logging.exception("st7796: touch report failed")
+    def _gui_periodic(self, eventtime):
+        # Print-start detection + periodic bars (runs from the touch timer and
+        # from touch events).
+        try:
+            st = self.printer.lookup_object('print_stats').get_status(
+                eventtime)['state']
+        except Exception:
+            st = 'ready'
+        if st != self._last_ps_state:
+            self._last_ps_state = st
+            if st in ('printing', 'paused'):
+                # A print just started: jump to the printing screen.
+                self.gui_screen = 'print'
+                self._gui_defer(eventtime, 0.05)
+        if eventtime >= self._gui_next:
+            self._gui_next = eventtime + 0.5
+            self._gui_bars(eventtime)
     def _touch_sample(self, x, y, z, eventtime):
         if self.touch_debug:
             self._dbg_i = (getattr(self, '_dbg_i', 0) + 1) % 4
@@ -739,20 +789,7 @@ class ST7796:
                 self._mon = None
             return
         if self.gui:
-            try:
-                st = self.printer.lookup_object('print_stats').get_status(
-                    eventtime)['state']
-            except Exception:
-                st = 'ready'
-            if st != self._last_ps_state:
-                self._last_ps_state = st
-                if st in ('printing', 'paused'):
-                    # A print just started: jump to the printing screen.
-                    self.gui_screen = 'print'
-                    self._gui_defer(eventtime, 0.05)
-            if eventtime >= self._gui_next:
-                self._gui_next = eventtime + 0.5
-                self._gui_bars(eventtime)
+            self._gui_periodic(eventtime)
             if z >= self.touch_threshold:
                 if not self._touched:
                     self._touched = True
@@ -835,7 +872,14 @@ class ST7796:
     def _gc(self, i):
         return GUI_COLORS[i % len(GUI_COLORS)]
     def _gui_text(self, x, y, text, fg, bg, scale=1):
-        for i, ch in enumerate(text.encode('latin-1')):
+        data = text.encode('latin-1')
+        if self.cmd_str is not None:
+            # One command per chunk of text (far less serial overhead).
+            for i in range(0, len(data), 32):
+                self.cmd_str.send([x + i * 8 * scale, y, scale,
+                                   bytes(data[i:i + 32]), fg, bg])
+            return
+        for i, ch in enumerate(data):
             self.cmd_char.send([x + i * 8 * scale, y, scale, ch, fg, bg])
     def _gui_text_center(self, x0, w, y, text, fg, bg, scale=1):
         tw = len(text) * 8 * scale
@@ -900,9 +944,39 @@ class ST7796:
         res = (size, size, self._resample(data, w, h, size, size))
         self._icon_cache[key] = res
         return res
-    def _draw_bmp(self, icon, x, y, fg, bg):
+    def _icon_id(self, key, icon):
+        # Cache a bitmap on the MCU (if supported) and return its id.
+        if self.cmd_idraw is None or self.cmd_idef is None or key is None:
+            return None
+        i = self._ic_ids.get(key)
+        if i is not None:
+            return i if i >= 0 else None
+        w, h, data = icon
+        size = ((w + 7) // 8) * h
+        if (size < 24 or size > self._ic_max or len(self._ic_ids) >= 60
+                or self._ic_bytes + size > 22000):
+            self._ic_ids[key] = -1
+            return None
+        i = len(self._ic_ids)
+        try:
+            for off in range(0, size, 32):
+                self.cmd_idef.send([i, w, h, off,
+                                    bytes(data[off:off + 32])])
+        except Exception:
+            logging.exception("st7796: icon upload failed")
+            self._ic_ids[key] = -1
+            return None
+        self._ic_ids[key] = i
+        self._ic_bytes += size
+        return i
+    def _draw_bmp(self, icon, x, y, fg, bg, key=None):
         if icon is None or self.cmd_bmp is None:
             return
+        if key is not None and self.cmd_idraw is not None:
+            i = self._icon_id(key, icon)
+            if i is not None:
+                self.cmd_idraw.send([i, x, y, fg, bg])
+                return
         w, h, data = icon
         rowbytes = (w + 7) // 8
         rows_per = max(1, 40 // rowbytes)
@@ -911,24 +985,25 @@ class ST7796:
             chunk = data[off * rowbytes:(off + rows) * rowbytes]
             self.cmd_bmp.send([x, y, w, rows, off, fg, bg, bytes(chunk)])
     def _gui_icon(self, name, x, y, fg, bg):
-        self._draw_bmp(self._scaled_icon(name), x, y, fg, bg)
+        self._draw_bmp(self._scaled_icon(name), x, y, fg, bg, ('s', name))
     def _gui_icon_at(self, name, x, y, fg, bg, size):
-        self._draw_bmp(self._icon_at(name, size), x, y, fg, bg)
-    def _bmp_at(self, bmp, x, y, fg, bg):
+        self._draw_bmp(self._icon_at(name, size), x, y, fg, bg, (name, size))
+    def _bmp_at(self, bmp, x, y, fg, bg, key=None):
         w, h, data = bmp
         if w <= 0 or h <= 0 or self.cmd_bmp is None:
             return
-        self.cmd_bmp.send([x, y, w, h, 0, fg, bg, data])
+        self._draw_bmp(bmp, x, y, fg, bg, key)
     def _gui_round(self, x, y, w, h, color):
         self.cmd_rect.send([x, y, w, h, color])
         r = self.gui_radius
         if r <= 0 or self.cmd_bmp is None:
             return
         tl, tr, bl, br = self._corners
-        self._bmp_at(tl, x, y, color, self.gui_bg)
-        self._bmp_at(tr, x + w - r, y, color, self.gui_bg)
-        self._bmp_at(bl, x, y + h - r, color, self.gui_bg)
-        self._bmp_at(br, x + w - r, y + h - r, color, self.gui_bg)
+        self._bmp_at(tl, x, y, color, self.gui_bg, ('corner', 0))
+        self._bmp_at(tr, x + w - r, y, color, self.gui_bg, ('corner', 1))
+        self._bmp_at(bl, x, y + h - r, color, self.gui_bg, ('corner', 2))
+        self._bmp_at(br, x + w - r, y + h - r, color, self.gui_bg,
+                     ('corner', 3))
     # --- virtual SD file browser ---
     def _sd_dir(self):
         try:

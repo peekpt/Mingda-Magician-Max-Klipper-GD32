@@ -139,7 +139,7 @@ tft_icon(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t fg,
 // starting at output row (y + rowoff). rowbytes = (w+7)/8.
 static void
 tft_bmp(uint16_t x, uint16_t y, uint16_t w, uint8_t rows, uint16_t fg,
-        uint16_t bg, const uint8_t *data, uint8_t len)
+        uint16_t bg, const uint8_t *data, uint16_t len)
 {
     uint16_t rowbytes = (w + 7) / 8;
     if (!w || !rows || len < (uint16_t)rowbytes * rows)
@@ -412,7 +412,7 @@ command_tft_idraw(uint32_t *args)
         return;
     tft_bmp(args[1], args[2], icon_w[id], icon_h[id], args[3], args[4],
             icon_pool + icon_off[id],
-            (uint8_t)((icon_w[id] + 7) / 8 * icon_h[id]));
+            (uint16_t)((icon_w[id] + 7) / 8 * icon_h[id]));
 }
 DECL_COMMAND(command_tft_idraw, "tft_idraw id=%c x=%hu y=%hu fg=%hu bg=%hu");
 
