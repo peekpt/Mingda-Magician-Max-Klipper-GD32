@@ -1077,9 +1077,9 @@ class ST7796:
         # (display muted during homing/moves or while a GUI action runs).
         self._draw_hourglass(self._disp_quiet(eventtime))
     def _draw_hourglass(self, dead):
-        self._gui_icon_at('hourglass20', self.width - 24, 10,
+        self._gui_icon_at('hourglass20', self.width - 22, 11,
                           COL_WHITE if dead else COL_DIM, self.gui_bar_bg,
-                          14)
+                          11)
     def _gui_clock(self, eventtime):
         # Minimal heartbeat while the display is muted: just the clock + the
         # hourglass (~60 bytes), so the screen does not look frozen.
