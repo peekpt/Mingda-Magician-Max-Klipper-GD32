@@ -1065,13 +1065,13 @@ class ST7796:
         elif en and not det:
             fcol = COL_ERR
         self._gui_icon_at('extrude', self.width - 124, 8, fcol, bg, 18)
-        # Hourglass: dark grey while the UI is live, red when the display has not
-        # been able to draw for a while (muted during homing/moves, or a redraw
-        # backlog) - i.e. "dead time".
-        now = self.printer.get_reactor().monotonic()
-        dead = (now - self._ui_live_t) > 1.5
-        self._gui_icon_at('hourglass20', self.width - 28, 9,
-                          COL_ERR if dead else COL_DIM, bg, 18)
+        # Hourglass: dark grey normally, WHITE while the touch will not respond
+        # (display muted during homing/moves or while a GUI action runs).
+        self._draw_hourglass(self._disp_quiet(eventtime))
+    def _draw_hourglass(self, dead):
+        self._gui_icon_at('hourglass20', self.width - 24, 10,
+                          COL_WHITE if dead else COL_DIM, self.gui_bar_bg,
+                          14)
     def _gui_bottombar(self, eventtime, fill=True):
         bg = self.gui_bar_bg
         y = self.height - self.STRIP_H
@@ -1551,6 +1551,11 @@ class ST7796:
             # Moving: stay off the wire for a moment after dispatching.
             self._gui_grace_until = reactor.monotonic() + 2.5
         self._gui_action_active = True
+        # Tell the user straight away that taps will be ignored from now on.
+        try:
+            self._draw_hourglass(True)
+        except Exception:
+            pass
         def _run(et, s=script):
             try:
                 self.gcode.run_script_from_command(s)
