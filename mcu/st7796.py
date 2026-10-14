@@ -166,7 +166,8 @@ POPUP_ITEMS = {
 }
 
 # Friendly titles for the top bar (otherwise the screen id is shown)
-GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filamento', 'estop': 'Confirmar'}
+GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filamento',
+              'estop': 'Confirmar', 'mesh': 'Nivelar'}
 
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
 ICON = 0x100
@@ -205,6 +206,12 @@ def _x_fn(i, j, n):
     return abs(i - j) <= 0.08 * n or abs(i - (n - 1 - j)) <= 0.08 * n
 
 
+def _dot_fn(i, j, n):
+    c = (n - 1) / 2.0
+    dx, dy = i - c, j - c
+    return dx * dx + dy * dy <= (c + 0.35) ** 2
+
+
 def _hourglass_fn(i, j, n):
     # Simple hourglass: solid shape that narrows towards the middle.
     m = 0.12 * n
@@ -224,6 +231,9 @@ EXTRA_ICONS = {
     'play48': _mk_bmp(48, _play_fn),
     'x48': _mk_bmp(48, _x_fn),
     'hourglass20': _mk_bmp(20, _hourglass_fn),
+    'dot12': _mk_bmp(12, _dot_fn),
+    'dot18': _mk_bmp(18, _dot_fn),
+    'dot30': _mk_bmp(30, _dot_fn),
 }
 
 
@@ -293,6 +303,10 @@ class ST7796:
                                desc="Force a full GUI redraw")
         gcode.register_command('TFT_NET', self.cmd_TFT_NET,
                                desc="Show network info / send SSDP announce")
+        # Wrap BED_MESH_CALIBRATE so the display can show the probing map.
+        self._mesh_base = None
+        self._mesh_hooked = False
+        self._mesh_hook()
         # Touch (XPT2046)
         self.gcode = gcode
         self.touch_enable = config.getboolean('touch', True)
@@ -359,6 +373,16 @@ class ST7796:
         self._baby_saved = 0.
         self._baby_file = os.path.expanduser(
             '~/printer_data/config/baby_z.txt')
+        # Bed mesh probing map
+        self._mesh_active = False
+        self._mesh_done = -1
+        self._mesh_prev = None
+        self._mesh_prev_screen = 'print'
+        self._mesh_draw = False
+        try:
+            old = gcode.ready_gcode_handlers  # noqa
+        except Exception:
+            old = None
         self._corners = (_make_corner(self.gui_radius, False, False),
                          _make_corner(self.gui_radius, True, False),
                          _make_corner(self.gui_radius, False, True),
@@ -749,6 +773,27 @@ class ST7796:
             # Printer is homing/moving: stay off the link. During homing/probing
             # stay completely silent (trsync timing), otherwise send a tiny
             # heartbeat (clock + hourglass) so the screen doesn't look frozen.
+            if (self._mesh_active and not self._homing
+                    and eventtime >= self._gui_beat and not self._gui_ops):
+                # Let the probe map advance while travelling between probe
+                # points - only when the move queue is deep enough to absorb a
+                # small burst (never during a probe move: _homing).
+                self._gui_beat = eventtime + 0.3
+                try:
+                    st = self.printer.lookup_object('toolhead').get_status(
+                        eventtime)
+                    deep = st['print_time'] - st['estimated_print_time'] > 0.4
+                except Exception:
+                    deep = False
+                if deep:
+                    try:
+                        ops = []
+                        self._mesh_view_ops(ops, eventtime)
+                        self._mesh_draw = True
+                        self._gui_enqueue(ops)
+                    except Exception:
+                        self._mesh_draw = False
+                return eventtime + 0.1
             if not self._homing and eventtime >= self._gui_beat:
                 self._gui_beat = eventtime + 1.0
                 try:
@@ -1236,6 +1281,174 @@ class ST7796:
                        "%02d:%02d" % (dur // 3600, (dur // 60) % 60),
                        COL_WHITE, self.gui_bar_bg, 1)
         self._draw_hourglass(True)
+    # --- bed mesh probing map ---------------------------------------------
+    def _mesh_hook(self):
+        # bed_mesh (and any BED_MESH_CALIBRATE macro) may be configured after
+        # this section, so also retry once the printer is fully built.
+        if self._mesh_hooked or self._mesh_base is not None:
+            return
+        try:
+            base = self.gcode.register_command('BED_MESH_CALIBRATE', None)
+        except Exception:
+            return
+        if base is None:
+            return
+        self._mesh_base = base
+        self._mesh_hooked = True
+        try:
+            self.gcode.register_command('BED_MESH_CALIBRATE',
+                                        self._cmd_mesh_calibrate)
+            logging.info("st7796: BED_MESH_CALIBRATE hooked (probe map)")
+        except Exception:
+            logging.exception("st7796: cannot hook BED_MESH_CALIBRATE")
+
+    def _cmd_mesh_calibrate(self, gcmd):
+        if self._mesh_base is None:
+            return
+        reactor = self.printer.get_reactor()
+        self._mesh_prev_screen = self.gui_screen
+        self._mesh_active = True
+        self._mesh_done = -1
+        if self.gui:
+            self.gui_screen = 'mesh'
+            self._gui_render(reactor.monotonic())
+        try:
+            self._mesh_base(gcmd)
+        finally:
+            self._mesh_active = False
+            if self.gui:
+                self.gui_screen = self._mesh_prev_screen or 'print'
+                self._gui_defer(reactor.monotonic(), 0.3)
+
+    def _mesh_pts(self):
+        # (screen_x, screen_y, probe index) for the mesh points (serpentine)
+        mn, mx, cx, cy = (0., 0.), (300., 300.), 4, 4
+        try:
+            st = self.printer.lookup_object('bed_mesh').get_status(0)
+            mn, mx = st.get('mesh_min', mn), st.get('mesh_max', mx)
+            cfg = self.printer.lookup_object('configfile').get_status(0)[
+                'settings'].get('bed_mesh', {})
+            pc = cfg.get('probe_count', (4, 4))
+            cx, cy = int(pc[0]), int(pc[1])
+        except Exception:
+            pass
+        cx = max(2, cx)
+        cy = max(2, cy)
+        gx0, gy0, gw, gh = self.RAIL_W + 14, self.TOP_H + 18, 200, 200
+        out = []
+        for j in range(cy):
+            for m in range(cx):
+                i = m if j % 2 == 0 else cx - 1 - m
+                sx = gx0 + int(i * (gw - 14) / (cx - 1))
+                sy = gy0 + int((cy - 1 - j) * (gh - 14) / (cy - 1))
+                out.append((sx, sy, j * cx + m, i, j))
+        return out
+
+    def _mesh_geo(self):
+        # (mesh_min, mesh_max, cols, rows) of the configured bed mesh.
+        mn, mx, cx, cy = (0., 0.), (300., 300.), 4, 4
+        try:
+            st = self.printer.lookup_object('bed_mesh').get_status(0)
+            mn = tuple(st.get('mesh_min', mn))
+            mx = tuple(st.get('mesh_max', mx))
+        except Exception:
+            pass
+        try:
+            cfg = self.printer.lookup_object('configfile').get_status(0)[
+                'settings'].get('bed_mesh', {})
+            pc = cfg.get('probe_count', (4, 4))
+            cx, cy = max(2, int(pc[0])), max(2, int(pc[1]))
+        except Exception:
+            pass
+        return mn, mx, cx, cy
+
+    def _mesh_cur(self, eventtime):
+        try:
+            st = self.printer.lookup_object('toolhead').get_status(eventtime)
+            pos = st['position']
+        except Exception:
+            return 0., 0.
+        return float(pos[0]), float(pos[1])
+
+    def _mesh_pts(self, mn, mx, cx, cy):
+        # [(screen_x, screen_y, probe index, col, row)] - the probe order is
+        # serpentine, the on-screen layout is the plain grid.
+        x0, y0 = self.RAIL_W + 18, self.TOP_H + 16
+        gw, gh = 196, 196
+        out = []
+        for j in range(cy):
+            for m in range(cx):
+                i = m if j % 2 == 0 else cx - 1 - m
+                sx = x0 + int(i * (gw - 16) / (cx - 1))
+                sy = y0 + int((cy - 1 - j) * (gh - 16) / (cy - 1))
+                out.append((sx, sy, j * cx + m, i, j))
+        return out
+
+    def _mesh_view_ops(self, ops, eventtime):
+        mn, mx, cx, cy = self._mesh_geo()
+        pts = self._mesh_pts(mn, mx, cx, cy)
+        hx, hy = self._mesh_cur(eventtime)
+        best = None
+        for (sx, sy, idx, i, j) in pts:
+            px = mn[0] + (mx[0] - mn[0]) * i / max(1, cx - 1)
+            py = mn[1] + (mx[1] - mn[1]) * j / max(1, cy - 1)
+            d = (px - hx) ** 2 + (py - hy) ** 2
+            if best is None or d < best[0]:
+                best = (d, idx, sx, sy)
+        if best is not None and best[1] > self._mesh_done:
+            self._mesh_done = best[1]
+        cols = sorted({p[0] for p in pts})
+        rows = sorted({p[1] for p in pts})
+        gx0, gx1 = cols[0] + 6, cols[-1] + 6
+        gy0, gy1 = rows[0] + 6, rows[-1] + 6
+        # the grid itself
+        for gx in cols:
+            ops.append(lambda gx=gx, a=gy0, b=gy1: self.cmd_rect.send(
+                [gx + 6, a, 1, b - a, COL_DIM]))
+        for gy in rows:
+            ops.append(lambda gy=gy, a=gx0, b=gx1: self.cmd_rect.send(
+                [a, gy + 6, b - a, 1, COL_DIM]))
+        dot = EXTRA_ICONS['dot12']
+        big = EXTRA_ICONS['dot30']
+        for (sx, sy, idx, i, j) in pts:
+            if best is not None and idx == best[1]:
+                ops.append(lambda sx=sx, sy=sy, d=big: self._bmp_at(
+                    d, sx - 15, sy - 15, COL_ERR, COL_BG, ('dot30', 0)))
+            else:
+                col = COL_OK if idx <= self._mesh_done else COL_ACTIVE
+                ops.append(lambda sx=sx, sy=sy, c=col, d=dot: self._bmp_at(
+                    d, sx - 6, sy - 6, c, COL_BG, ('dot12', 0)))
+        ops.append(lambda: self._gui_text(
+            self.RAIL_W + 22, rows[-1] + 24,
+            "Ponto %d / %d" % (self._mesh_done + 1, len(pts)),
+            COL_WHITE, COL_BG, 1))
+        # temperatures (icon + value)
+        try:
+            ex = self.printer.lookup_object('extruder').get_status(eventtime)
+            bd = self.printer.lookup_object('heater_bed').get_status(eventtime)
+        except Exception:
+            ex = bd = None
+        tx = self.width - 196
+        if ex is not None:
+            for k, (icon, stt) in enumerate((('nozzle', ex), ('bed', bd))):
+                ty = self.TOP_H + 16 + k * 46
+                ico = self._icon_at(icon, 22)
+                col = self._temp_color(stt['temperature'], stt['target'])
+                lbl = "%d/%d" % (stt['temperature'], stt['target'])
+                ops.append(lambda i=ico, tx=tx, ty=ty, c=col:
+                           self._draw_bmp(i, tx, ty, c, COL_BG,
+                                          ('mticon', icon, 22)))
+                ops.append(lambda tx=tx, ty=ty, c=col, s=lbl:
+                           self._gui_text(tx + 30, ty + 3, s, c, COL_BG, 1))
+        # abort button
+        bx, by, bw, bh = tx - 6, self.TOP_H + 118, 188, 92
+        ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self._gui_round(
+            bx, by, bw, bh, COL_ERR))
+        ops.append(lambda bx=bx, by=by, bw=bw: self._gui_icon_at(
+            'x48', bx + (bw - 48) // 2, by + 8, COL_WHITE, COL_ERR, 48))
+        ops.append(lambda bx=bx, by=by, bw=bw: self._gui_text_center(
+            bx, bw, by + 62, "ABORTAR", COL_WHITE, COL_ERR, 1))
+
     # --- inline adjustment panel (drawn where the info tiles are) --------
     def _baby_load(self):
         try:
@@ -1570,9 +1783,12 @@ class ST7796:
         if not ops:
             self._gui_ops = None
             return reactor.NEVER
-        if self._disp_quiet(eventtime):
+        if self._disp_quiet(eventtime) and not (
+                self._mesh_draw and not self._homing
+                and not self._gui_action_active):
             # Homing/moving started mid-redraw: drop it and redraw when idle.
             self._gui_ops = None
+            self._mesh_draw = False
             self._gui_defer(eventtime, 0.4)
             return reactor.NEVER
         t0 = reactor.monotonic()
@@ -1587,10 +1803,16 @@ class ST7796:
                 return reactor.NEVER
             if reactor.monotonic() - t0 >= 0.010:
                 break
+            if self._mesh_draw and self._homing:
+                # a probe move just started: stop the map update instantly
+                self._gui_ops = None
+                self._mesh_draw = False
+                return reactor.NEVER
         if ops:
             reactor.register_callback(self._gui_drain)
         else:
             self._gui_ops = None
+            self._mesh_draw = False
             self._ui_live_t = reactor.monotonic()
         return reactor.NEVER
     def _gui_defer(self, eventtime, delay=0.2):
@@ -1608,6 +1830,7 @@ class ST7796:
         logging.info("st7796: homing end - display resumed (depth %d)",
                      self._homing)
     def _on_connect(self):
+        self._mesh_hook()
         self._homing = 0
         self._baby_load()
         if self._baby_saved:
@@ -1862,7 +2085,13 @@ class ST7796:
                 self._btn_ops(ops, x, y, w, h, 'x48', "Cancelar", COL_ERR,
                               accent=acc)
     def _gui_render(self, eventtime):
-        if self._disp_quiet(eventtime) or self._gui_ops:
+        self._mesh_draw = bool(self.gui and self.gui_screen == 'mesh')
+        if self._gui_ops:
+            return
+        if self._disp_quiet(eventtime) and not (
+                self._mesh_draw and not self._homing
+                and not self._gui_action_active):
+            self._mesh_draw = False
             self._gui_defer(eventtime)
             return
         # Split the background into strips: a single full-screen tft_rect blocks
@@ -1895,6 +2124,8 @@ class ST7796:
             self._ptune_view_ops(ops, eventtime)
         elif self.gui_screen == 'estop':
             self._estop_view_ops(ops, eventtime)
+        elif self.gui_screen == 'mesh':
+            self._mesh_view_ops(ops, eventtime)
         g = self.gui_btn_gap
         i2 = g // 2
         for (x, y, w, h, idx, item) in self._gui_buttons():
@@ -2527,6 +2758,17 @@ class ST7796:
                         self._gui_do(('tune', k, 1 if step > 0 else -1),
                                      eventtime)
                         return
+        if self.gui_screen == 'mesh':
+            bx = self.RAIL_W + 236
+            by = self.TOP_H + 120
+            if bx <= sx < bx + 180 and by <= sy < by + 96:
+                self.gcode.respond_info(
+                    "GUI: ABORTAR nivelamento (M112 - depois FIRMWARE_RESTART)")
+                self._gui_msg = "Nivelamento abortado (M112)"
+                self._gui_msg_until = (
+                    self.printer.get_reactor().monotonic() + 15.)
+                self._gui_run_action("M112")
+                return
         if self.gui_screen == 'network':
             for (x, y, w, h, idx, item) in self._gui_buttons():
                 if x <= sx < x + w and y <= sy < y + h:
