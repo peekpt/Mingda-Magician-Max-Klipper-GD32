@@ -296,6 +296,7 @@ class ST7796:
         self._net_cache = None
         self._net_t = 0.
         self._ui_live_t = 0.
+        self._gui_beat = 0.
         self._ptune = 'flow'
         self._card_cols = {}
         self._fil_unloaded = False
@@ -663,7 +664,14 @@ class ST7796:
         return self.menu
     def _touch_event(self, eventtime):
         if self.gui and self._disp_quiet(eventtime):
-            # Printer is homing/moving: keep the serial link completely clear.
+            # Printer is homing/moving: stay off the link, but keep a tiny
+            # heartbeat (clock + hourglass) so the screen doesn't look frozen.
+            if eventtime >= self._gui_beat:
+                self._gui_beat = eventtime + 1.0
+                try:
+                    self._gui_clock(eventtime)
+                except Exception:
+                    pass
             return eventtime + 0.06
         if self._gui_pending is not None:
             if eventtime >= self._gui_pending:
@@ -1072,6 +1080,18 @@ class ST7796:
         self._gui_icon_at('hourglass20', self.width - 24, 10,
                           COL_WHITE if dead else COL_DIM, self.gui_bar_bg,
                           14)
+    def _gui_clock(self, eventtime):
+        # Minimal heartbeat while the display is muted: just the clock + the
+        # hourglass (~60 bytes), so the screen does not look frozen.
+        try:
+            dur = int(self.printer.lookup_object('print_stats').get_status(
+                eventtime)['print_duration'])
+        except Exception:
+            dur = 0
+        self._gui_text(self.width - 96, 7,
+                       "%02d:%02d" % (dur // 3600, (dur // 60) % 60),
+                       COL_WHITE, self.gui_bar_bg, 1)
+        self._draw_hourglass(True)
     def _gui_bottombar(self, eventtime, fill=True):
         bg = self.gui_bar_bg
         y = self.height - self.STRIP_H
