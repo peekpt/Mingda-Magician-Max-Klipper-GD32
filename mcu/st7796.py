@@ -297,6 +297,9 @@ class ST7796:
         self._net_t = 0.
         self._ui_live_t = 0.
         self._gui_beat = 0.
+        self._gui_err = None
+        self._gui_err_until = 0.
+        gcode.register_output_handler(self._gui_output)
         self._ptune = 'flow'
         self._card_cols = {}
         self._fil_unloaded = False
@@ -1093,6 +1096,17 @@ class ST7796:
                        "%02d:%02d" % (dur // 3600, (dur // 60) % 60),
                        COL_WHITE, self.gui_bar_bg, 1)
         self._draw_hourglass(True)
+    def _gui_output(self, msg):
+        # Klipper prefixes gcode errors with "!!" - keep the last one so it can
+        # be shown on the panel.
+        try:
+            if msg.startswith('!!'):
+                self._gui_err = msg[2:].strip()[:56]
+                self._gui_err_until = (
+                    self.printer.get_reactor().monotonic() + 15.)
+                self._gui_next = 0.
+        except Exception:
+            pass
     def _gui_bottombar(self, eventtime, fill=True):
         bg = self.gui_bar_bg
         y = self.height - self.STRIP_H
@@ -1110,7 +1124,9 @@ class ST7796:
             msg = ''
             fg = COL_WHITE
             now = self.printer.get_reactor().monotonic()
-            if self._gui_msg and now < self._gui_msg_until:
+            if self._gui_err and now < self._gui_err_until:
+                msg, fg = "ERRO: " + self._gui_err, COL_ERR
+            elif self._gui_msg and now < self._gui_msg_until:
                 msg, fg = self._gui_msg, COL_WARN
             else:
                 ds = self.printer.lookup_object('display_status', None)
