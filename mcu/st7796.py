@@ -1413,12 +1413,11 @@ class ST7796:
             elif idx == 7:
                 self._btn_ops(ops, x, y, w, h, 'thermo', "Temps", accent=acc)
             elif idx == 10:
-                if self._fil_unloaded:
-                    self._btn_ops(ops, x, y, w, h, 'load', "Introduzir",
-                                  accent=acc)
-                else:
-                    self._btn_ops(ops, x, y, w, h, 'unload', "Trocar fil.",
-                                  accent=acc)
+                self._btn_ops(ops, x, y, w, h, 'unload', "Retirar",
+                              accent=acc)
+            elif idx == 11:
+                self._btn_ops(ops, x, y, w, h, 'load', "Introduzir",
+                              accent=acc)
     def _gui_render(self, eventtime):
         if self._disp_quiet(eventtime) or self._gui_ops:
             self._gui_defer(eventtime)
@@ -1856,16 +1855,13 @@ class ST7796:
                     eventtime)['state']
             except Exception:
                 st = 'ready'
-            if not self._fil_unloaded:
-                # Remove the filament: pause first if a print is running.
-                self._fil_unloaded = True
+            if action[1] == 'load':
+                self._gui_msg = "A introduzir o filamento (~100mm)..."
+                script = 'LOAD_FILAMENT'
+            else:
                 self._gui_msg = "A retirar o filamento..."
                 script = ('PAUSE\n' if st == 'printing' else '')
                 script += 'UNLOAD_FILAMENT'
-            else:
-                self._fil_unloaded = False
-                self._gui_msg = "A introduzir o filamento (~100mm)..."
-                script = 'LOAD_FILAMENT'
             try:
                 self._gui_msg_until = (
                     self.printer.get_reactor().monotonic() + 20.)
@@ -2048,8 +2044,11 @@ class ST7796:
                             self.gcode.respond_info("GUI: Temperaturas")
                             self._gui_do(('scr', 'ptemp'), eventtime)
                         elif idx == 10:
-                            self.gcode.respond_info("GUI: Filamento")
-                            self._gui_do(('fil',), eventtime)
+                            self.gcode.respond_info("GUI: Retirar filamento")
+                            self._gui_do(('fil', 'unload'), eventtime)
+                        elif idx == 11:
+                            self.gcode.respond_info("GUI: Introduzir filamento")
+                            self._gui_do(('fil', 'load'), eventtime)
                         return
             else:
                 for (bx, by, bw, bh, kind) in self._list_btns():
