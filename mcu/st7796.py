@@ -175,6 +175,14 @@ EXTRA_ICONS = {
 }
 
 
+def _fg_on(bg):
+    # Pick white or black text/icon for a RGB565 background (light colours such
+    # as lime/yellow/light grey get black).
+    r, g, b = (bg >> 11) & 0x1F, (bg >> 5) & 0x3F, bg & 0x1F
+    lum = (r * 299 + g * 587 + b * 114) // 1000
+    return 0x0000 if lum > 32 else 0xFFFF
+
+
 def _make_corner(r, fx, fy):
     # r x r quarter-disk bitmap (1 = inside), MSB-first, row-major.
     rowbytes = (r + 7) // 8
@@ -902,31 +910,35 @@ class ST7796:
         entries.sort(key=lambda e: -e[1])
         self._sd_files_cache = entries
         return entries
-    # Vertical list geometry: the list fills the button area, with up/down/print
+    # Vertical list geometry: the tiles fill the button area, with up/down/print
     # buttons in a strip on the right.
     RIGHT_W = 80
     LIST_PITCH = 20
+    LIST_COLS, LIST_ROWS = 2, 3
     def _list_area(self):
         return (self.RAIL_W, self.TOP_H, self.width - self.RIGHT_W,
                 self.height - self.STRIP_H)
-    def _list_rows(self):
-        x0, y0, x1, y1 = self._list_area()
-        pitch = self.LIST_PITCH
-        n = max(1, (y1 - y0) // pitch)
+    def _list_tiles(self):
+        # Coloured rounded tiles, one per file (colour varies per file).
         files = self._sd_files()
-        self._sd_vis = n
+        per = self.LIST_COLS * self.LIST_ROWS
         self._sd_sel = max(0, min(max(0, len(files) - 1), self._sd_sel))
-        if self._sd_sel < self._sd_top:
-            self._sd_top = self._sd_sel
-        if self._sd_sel >= self._sd_top + n:
-            self._sd_top = self._sd_sel - n + 1
-        self._sd_top = max(0, min(self._sd_top, max(0, len(files) - n)))
+        self._sd_page = self._sd_sel // per
+        self._sd_vis = per
+        start = self._sd_page * per
+        x0, x1 = self.RAIL_W + 2, self.width - self.RIGHT_W
+        y0 = self.TOP_H + 2
+        y1 = self.height - self.STRIP_H - 2
+        tw = (x1 - x0) // self.LIST_COLS
+        th = (y1 - y0) // self.LIST_ROWS
         out = []
-        for i in range(n):
-            k = self._sd_top + i
+        for i in range(per):
+            k = start + i
             if k >= len(files):
                 break
-            out.append((x0, y0 + i * pitch, x1 - x0, pitch, k, files[k][0]))
+            out.append((x0 + (i % self.LIST_COLS) * tw,
+                        y0 + (i // self.LIST_COLS) * th, tw, th, k,
+                        files[k][0]))
         return out
     def _list_btns(self):
         x0, y0, x1, y1 = self._list_area()
@@ -1186,19 +1198,25 @@ class ST7796:
         # is harmless there; a shallow buffer (print start, manual moves) is not.
         return (not printing) or buf < 1.0
     def _gui_list_ops(self, ops):
-        x0, y0, x1, y1 = self._list_area()
-        ops.append(lambda: self.cmd_rect.send([x0, y0, x1 - x0, y1 - y0,
-                                               COL_BG]))
-        for (rx, ry, rw, rh, k, name) in self._list_rows():
-            bg = COL_ACTIVE if k == self._sd_sel else COL_BG
+        # Coloured rounded tiles, one per file: icon + name, text colour chosen
+        # automatically (white on dark colours, black on light ones).
+        for (rx, ry, rw, rh, k, name) in self._list_tiles():
+            bg = self._gc(k)
+            fg = _fg_on(bg)
+            sel = (k == self._sd_sel)
+            ops.append(lambda rx=rx, ry=ry, rw=rw, rh=rh, bg=bg, sel=sel:
+                       self._gui_round(rx + 3, ry + 3, rw - 6, rh - 6,
+                                       COL_WHITE if sel else bg))
             ops.append(lambda rx=rx, ry=ry, rw=rw, rh=rh, bg=bg:
-                       self.cmd_rect.send([rx, ry, rw, rh, bg]))
-            if k == self._sd_sel:
-                ops.append(lambda rx=rx, ry=ry, rh=rh:
-                           self.cmd_rect.send([rx, ry, 4, rh, COL_C1]))
-            ops.append(lambda rx=rx, ry=ry, name=name, bg=bg:
-                       self._gui_text(rx + 12, ry + 2, name[:44], COL_WHITE,
-                                      bg, 1))
+                       self._gui_round(rx + 6, ry + 6, rw - 12, rh - 12, bg))
+            iw = (self._icon_at('files', 26) or (0, 0))[0]
+            ops.append(lambda rx=rx, ry=ry, rw=rw, fg=fg, bg=bg, iw=iw:
+                       self._gui_icon_at('files', rx + (rw - iw) // 2, ry + 12,
+                                         fg, bg, 26))
+            lab = name[:max(6, (rw - 20) // 8)]
+            ops.append(lambda rx=rx, ry=ry, rw=rw, rh=rh, fg=fg, bg=bg, lab=lab:
+                       self._gui_text_center(rx, rw, ry + rh - 30, lab, fg, bg,
+                                             1))
         for (bx, by, bw, bh, kind) in self._list_btns():
             isz = 44
             ops.append(lambda bx=bx, by=by, bw=bw, bh=bh:
@@ -2010,7 +2028,7 @@ class ST7796:
                         self.gcode.respond_info("GUI file: %s" % kind)
                         self._list_press(kind, eventtime)
                         return
-                for (rx, ry, rw, rh, k, name) in self._list_rows():
+                for (rx, ry, rw, rh, k, name) in self._list_tiles():
                     if rx <= sx < rx + rw and ry <= sy < ry + rh:
                         self._sd_sel = k
                         self.gcode.respond_info("GUI file sel: %s" % name)
