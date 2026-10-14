@@ -142,6 +142,29 @@ GUI_STRIP = {
 # Screens whose button grid is not the default 4 columns x 2 rows
 GUI_ROWS = {'print': 2}
 
+# Generic adjustment popups (one implementation for every info icon).
+#   kind: 'temp' reads <src>.target, 'factor' reads gcode_move.<key>,
+#         'fan' reads fan.speed, 'baby' is the live Z offset.
+POPUP_ITEMS = {
+    'etemp': dict(icon='fire', name='Bico', units='C', kind='temp',
+                  src='extruder', steps=(1., 5., 10.), default=5.,
+                  lo=0., hi=270.),
+    'btemp': dict(icon='bed', name='Cama', units='C', kind='temp',
+                  src='heater_bed', steps=(1., 5., 10.), default=5.,
+                  lo=0., hi=120.),
+    'fan': dict(icon='fan', name='Fan', units='%', kind='fan',
+                steps=(10., 25., 50.), default=25., lo=0., hi=100.),
+    'flow': dict(icon='extrude', name='Flow', units='%', kind='factor',
+                 key='extrude_factor', steps=(1., 5.), default=1.,
+                 lo=50., hi=200.),
+    'speed': dict(icon='speed', name='Speed', units='%', kind='factor',
+                  key='speed_factor', steps=(5., 10.), default=5.,
+                  lo=25., hi=200.),
+    'baby': dict(icon='zoffset', name='Baby', units='mm', kind='baby',
+                 steps=(0.005, 0.01, 0.1, 0.5), default=0.01,
+                 lo=-5., hi=5., live=True, save=True),
+}
+
 # Friendly titles for the top bar (otherwise the screen id is shown)
 GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filamento', 'estop': 'Confirmar'}
 
@@ -325,6 +348,12 @@ class ST7796:
         self._BSTEPS = (0.005, 0.01, 0.1, 0.5)
         self._bstep_i = 1
         self._baby_dirty = False
+        self._popup = None
+        self._popup_val = None
+        self._popup_step = 1.
+        self._popup_save = False
+        self._popup_dirty = False
+        self._baby_base = 0.
         self._corners = (_make_corner(self.gui_radius, False, False),
                          _make_corner(self.gui_radius, True, False),
                          _make_corner(self.gui_radius, False, True),
@@ -1200,6 +1229,210 @@ class ST7796:
                        "%02d:%02d" % (dur // 3600, (dur // 60) % 60),
                        COL_WHITE, self.gui_bar_bg, 1)
         self._draw_hourglass(True)
+    # --- generic adjustment popup -----------------------------------------
+    def _popup_state(self):
+        return POPUP_ITEMS.get(self._popup)
+
+    def _popup_read(self, eventtime):
+        # Current live value of the popup's parameter.
+        it = self._popup_state()
+        if it is None:
+            return None
+        try:
+            k = it['kind']
+            if k == 'temp':
+                return float(self.printer.lookup_object(
+                    it['src']).get_status(eventtime)['target'])
+            if k == 'factor':
+                gm = self.printer.lookup_object(
+                    'gcode_move').get_status(eventtime)
+                return float(gm.get(it['key']) or 1.) * 100.
+            if k == 'fan':
+                return float(self.printer.lookup_object('fan').get_status(
+                    eventtime).get('speed') or 0.) * 100.
+            if k == 'baby':
+                gp = self.printer.lookup_object(
+                    'gcode_move').get_status(eventtime)['gcode_position']
+                return float(gp[2]) - self._baby_base
+        except Exception:
+            return None
+        return None
+    def _popup_fmt(self, val):
+        it = self._popup_state()
+        if it is None or val is None:
+            return "-"
+        if it['kind'] == 'baby':
+            return "%+.3f" % val
+        if it['kind'] == 'temp':
+            return "%d" % round(val)
+        return "%d%%" % round(val)
+    def _popup_apply(self, val):
+        # Returns the gcode that applies `val` to the printer.
+        it = self._popup_state()
+        if it is None or val is None:
+            return None
+        k = it['kind']
+        if k == 'temp':
+            return "M104 S%d" % round(val) if it['src'] == 'extruder' \
+                else "M140 S%d" % round(val)
+        if k == 'factor':
+            return ("M221 S%d" if it['key'] == 'extrude_factor'
+                    else "M220 S%d") % round(val)
+        if k == 'fan':
+            return "M106 S%d" % int(round(val * 255. / 100.))
+        if k == 'baby':
+            return "SET_GCODE_OFFSET Z_ADJUST=%+.3f MOVE=1" % val
+        return None
+    def _popup_btns(self):
+        # (x, y, w, h, what) for close / minus / plus / step / ok.
+        x0, y0, w, h = 72, 44, 336, 238
+        bw, bh = 84, 52
+        step = (x0 + 34, y0 + 198, bw, 30, 'step')
+        ok = (x0 + w - 118, y0 + 198, bw, 30, 'ok')
+        return ([(x0 + w - 32, y0 + 6, 26, 26, 'close'),
+                 (x0 + 34, y0 + 140, bw, bh, 'minus'),
+                 (x0 + w - 118, y0 + 140, bw, bh, 'plus')] +
+                ([step, ok] if not self._popup_save else
+                 [(x0 + 34, y0 + 198, bw, 30, 'step'),
+                  (x0 + w - 118, y0 + 198, 84, 30, 'save')]))
+    def _popup_view_ops(self, ops, eventtime):
+        it = self._popup_state()
+        if it is None:
+            return
+        x0, y0, w, h = 72, 44, 336, 238
+        # dark backdrop over the whole screen + the popup box
+        ops.append(lambda: self.cmd_rect.send([0, 0, self.width,
+                                               self.height, 0x0000]))
+        ops.append(lambda: self._gui_round(x0, y0, w, h, self.gui_btn_bg))
+        ops.append(lambda: self._gui_round(x0 + 3, y0 + 3, w - 6, h - 6,
+                                           self.gui_bar_bg))
+        iw = (self._icon_at(it['icon'], 48) or (0, 0))[0]
+        ops.append(lambda iw=iw: self._gui_icon_at(
+            it['icon'], x0 + (w - iw) // 2, y0 + 8, COL_WHITE,
+            self.gui_bar_bg, 48))
+        ops.append(lambda: self._gui_text_center(
+            x0, w, y0 + 60, it['name'], COL_WHITE, self.gui_bar_bg, 2))
+        val = self._popup_val if self._popup_val is not None \
+            else self._popup_read(eventtime)
+        ops.append(lambda val=val: self._gui_text_center(
+            x0, w, y0 + 88, self._popup_fmt(val), COL_C1, self.gui_bar_bg, 3))
+        for (bx, by, bw, bh, what) in self._popup_btns():
+            if what == 'close':
+                ops.append(lambda bx=bx, by=by, bw=bw, bh=bh:
+                           self._gui_round(bx, by, bw, bh, COL_ERR))
+                ops.append(lambda bx=bx, by=by, bw=bw, bh=bh:
+                           self._gui_text_center(bx, bw, by + 5, "X",
+                                                 COL_WHITE, COL_ERR, 1))
+            elif what in ('minus', 'plus'):
+                self._sign_btn(ops, bx, by, bw, bh,
+                               "+" if what == 'plus' else "-",
+                               self._gc(0 if what == 'plus' else 1))
+            else:
+                bg = COL_OK if what == 'save' else self.gui_btn_bg
+                if what == 'save':
+                    lab = "Save"
+                elif what == 'ok':
+                    lab = "OK"
+                else:
+                    lab = "%g" % self._popup_step
+                ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, bg=bg:
+                           self._gui_round(bx, by, bw, bh, bg))
+                ops.append(lambda bx=bx, bw=bw, by=by, bh=bh, lab=lab, bg=bg:
+                           self._gui_text_center(
+                               bx, bw, by + (bh - 16) // 2, lab, COL_WHITE,
+                               bg, 1))
+        if it.get('live'):
+            ops.append(lambda: self._gui_text_center(
+                x0, w, y0 + 226, "(aplica no trabalho)", COL_DIM,
+                self.gui_bar_bg, 1))
+    def _popup_open(self, key, eventtime):
+        it = POPUP_ITEMS.get(key)
+        if it is None:
+            return
+        self._popup = key
+        self._popup_step = it['default']
+        self._popup_val = None
+        self._popup_save = bool(it.get('save'))
+        if it.get('live'):
+            self._popup_dirty = False
+            try:
+                gp = self.printer.lookup_object(
+                    'gcode_move').get_status(0)['gcode_position']
+                self._baby_base = float(gp[2])
+            except Exception:
+                self._baby_base = 0.
+        self._gui_render(eventtime)
+    def _popup_close(self, eventtime, restore=True):
+        self._popup = None
+        self._popup_val = None
+        if restore:
+            self._gui_render(eventtime)
+    def _popup_tap(self, sx, sy, eventtime):
+        it = self._popup_state()
+        if it is None:
+            return
+        w = it.get('steps') or (1.,)
+        for (bx, by, bw, bh, what) in self._popup_btns():
+            if not (bx <= sx < bx + bw and by <= sy < by + bh):
+                continue
+            if what == 'close':
+                if it.get('live') and self._popup_dirty:
+                    pass          # keep the live change for this job
+                self._popup_close(eventtime)
+                return
+            if what in ('minus', 'plus'):
+                sign = 1. if what == 'plus' else -1.
+                if it.get('live'):
+                    # Baby step: apply straight away to the running job.
+                    amt = self._popup_step * sign
+                    val = (self._popup_read(eventtime) or 0.) + amt
+                    val = max(it['lo'], min(it['hi'], val))
+                    script = self._popup_apply(amt)
+                    self._popup_dirty = True
+                    self.gcode.respond_info("GUI %s: %s" % (it['name'],
+                                                            script))
+                    self._gui_run_action(script)
+                    self._gui_render(eventtime)
+                else:
+                    cur = self._popup_val
+                    if cur is None:
+                        cur = self._popup_read(eventtime)
+                    if cur is None:
+                        return
+                    self._popup_val = max(it['lo'], min(it['hi'],
+                                                        cur
+                                                        + self._popup_step
+                                                        * sign))
+                    self._gui_render(eventtime)
+                return
+            if what == 'step':
+                vals = it['steps']
+                if len(vals) > 1:
+                    i = vals.index(self._popup_step) if self._popup_step \
+                        in vals else 0
+                    self._popup_step = vals[(i + 1) % len(vals)]
+                    self._gui_render(eventtime)
+                return
+            if what == 'ok':
+                val = self._popup_val
+                if val is not None:
+                    script = self._popup_apply(val)
+                    if script:
+                        self.gcode.respond_info("GUI %s: %s" % (it['name'],
+                                                                script))
+                        self._gui_run_action(script)
+                self._popup_close(eventtime)
+                return
+            if what == 'save':
+                self.gcode.respond_info("GUI: gravar o baby step na probe")
+                self._gui_msg = "A gravar o baby step (SAVE_CONFIG)..."
+                self._gui_msg_until = (
+                    self.printer.get_reactor().monotonic() + 20.)
+                self._gui_run_action(
+                    'Z_OFFSET_APPLY_PROBE\nSAVE_CONFIG')
+                self._popup_close(eventtime)
+                return
+        # taps outside the popup are ignored
     def _gui_output(self, msg):
         # Klipper prefixes gcode errors with "!!" - keep the last one so it can
         # be shown on the panel.
@@ -1250,6 +1483,8 @@ class ST7796:
                                   (' ' + m.center(self._bot_max + 2) + ' ')
                                   [:(self._bot_max + 4)], fg, bg, 1)
     def _gui_bars(self, eventtime):
+        if self._popup is not None:
+            return              # modal popup covers everything: leave it alone
         sampled = False
         now = self.printer.get_reactor().monotonic()
         if now - self._t_last >= 2.:
@@ -1416,12 +1651,47 @@ class ST7796:
         ps = self._print_status(eventtime)
         return ps is not None and ps['state'] in ('printing', 'paused')
     def _print_btns(self):
-        # The four/six grid slots on the right hand side, as (x,y,w,h,idx).
-        out = []
-        for (x, y, w, h, idx, item) in self._gui_buttons():
-            if idx in (2, 3, 6, 7, 10, 11):
-                out.append((x, y, w, h, idx))
-        return out
+        # 1 x 2 column on the right: Pause/Continue (idx 2) + Cancel (idx 3).
+        bw = 92
+        x = self.width - bw - 6
+        y0 = self.TOP_H + 4
+        y1 = self.height - self.STRIP_H - 6
+        h = (y1 - y0 - 8) // 2
+        return [(x, y0, bw, h, 2), (x, y0 + h + 8, bw, h, 3)]
+    _PRINT_KEYS = ('etemp', 'btemp', 'fan', 'flow', 'speed', 'baby')
+    def _print_panel(self):
+        # (x, y, w, h, index, popup key) for the 3x2 tappable info tiles.
+        x0 = self.RAIL_W + 2
+        x1 = self.width - 100
+        y0 = self.TOP_H + 2
+        tw = (x1 - x0) // 3
+        th = 88
+        return [(x0 + (i % 3) * tw, y0 + (i // 3) * th, tw, th, i, k)
+                for i, k in enumerate(self._PRINT_KEYS)]
+    def _panel_value(self, key, eventtime):
+        it = POPUP_ITEMS[key]
+        try:
+            if it['kind'] == 'temp':
+                st = self.printer.lookup_object(
+                    it['src']).get_status(eventtime)
+                return ("%d/%d" % (st['temperature'], st['target']),
+                        self._temp_color(st['temperature'], st['target']))
+            if it['kind'] == 'factor':
+                gm = self.printer.lookup_object(
+                    'gcode_move').get_status(eventtime)
+                return ("%d%%" % int(round(float(
+                    gm.get(it['key']) or 1.) * 100)), COL_C4)
+            if it['kind'] == 'fan':
+                v = float(self.printer.lookup_object('fan').get_status(
+                    eventtime).get('speed') or 0.) * 100.
+                return ("%d%%" % int(round(v)), COL_C3)
+            if it['kind'] == 'baby':
+                gp = self.printer.lookup_object(
+                    'gcode_move').get_status(eventtime)['gcode_position']
+                return ("%.2f" % float(gp[2]), COL_C1)
+        except Exception:
+            pass
+        return ("-", COL_DIM)
     def _graph_ops(self, ops, gx, gy, gw, gh, series, tgt, color, label, cur):
         ops.append(lambda gx=gx, gy=gy, gw=gw, gh=gh:
                    self.cmd_rect.send([gx, gy, gw, gh, self.gui_bar_bg]))
@@ -1484,14 +1754,26 @@ class ST7796:
         ps = self._print_status(eventtime)
         if ps is None:
             return
-        bw = (self.width - self.RAIL_W) // 4
+        # 3x2 tappable tiles: tap one to open its adjustment popup.
+        for (tx, ty, tw, th, i, k) in self._print_panel():
+            val, col = self._panel_value(k, eventtime)
+            it = POPUP_ITEMS[k]
+            draw = (not values_only) or (self._card_cols.get(i) != col)
+            self._card_cols[i] = col
+            self._card_ops(ops, tx, ty, tw, th, it['icon'], val, col, draw)
+        # X / Y / Z line
         try:
-            ex = self.printer.lookup_object('extruder').get_status(eventtime)
-            bd = self.printer.lookup_object('heater_bed').get_status(eventtime)
-            gm = self.printer.lookup_object('gcode_move').get_status(eventtime)
-            fn = self.printer.lookup_object('fan').get_status(eventtime)
+            gp = self.printer.lookup_object(
+                'gcode_move').get_status(eventtime)['gcode_position']
+            xyz = "X%.1f Y%.1f Z%.1f" % (float(gp[0]), float(gp[1]),
+                                         float(gp[2]))
         except Exception:
-            return
+            xyz = "X- Y- Z-"
+        py = self.TOP_H + 2 + 2 * 88
+        ops.append(lambda xyz=xyz, py=py: self._gui_text_center(
+            self.RAIL_W, self.width - 100 - self.RAIL_W, py + 4, xyz,
+            COL_WHITE, COL_BG, 1))
+        # progress bar (with side padding) and its percentage
         prog = 0.
         try:
             prog = float(self.printer.lookup_object('virtual_sdcard')
@@ -1501,63 +1783,12 @@ class ST7796:
         if not prog:
             prog = float(ps.get('progress') or 0.)
         prog = min(1., max(0., prog))
-        try:
-            zc = float(gm['gcode_position'][2])
-        except Exception:
-            zc = 0.
-        speed = float(gm.get('speed_factor') or 1.) * 100.
-        flow = float(gm.get('extrude_factor') or 1.) * 100.
-        fansp = float(fn.get('speed') or 0.) * 100.
-        try:
-            gp = gm['gcode_position']
-            xc, yc, zc = float(gp[0]), float(gp[1]), float(gp[2])
-        except Exception:
-            xc = yc = zc = 0.
-        lay = '-'
-        try:
-            info = ps.get('info') or {}
-            cl, tl = info.get('current_layer'), info.get('total_layer')
-            if cl is not None and tl:
-                lay = "%d/%d" % (cl, tl)
-            elif cl is not None:
-                lay = str(cl)
-        except Exception:
-            pass
-        # Info panel: 2 columns of small coloured icons with the value below,
-        # then a line with X/Y/Z and finally the progress bar (with side padding
-        # and the percentage centred over it).
-        px0, py0 = self.RAIL_W + 2, self.TOP_H + 2
-        pw = 2 * bw - 4
-        ph = self.height - self.STRIP_H - self.TOP_H - 4
-        cw = pw // 2
-        ch = (ph - 54) // 3
-        cards = [
-            ('fire', "%d/%d" % (ex['temperature'], ex['target']),
-             self._temp_color(ex['temperature'], ex['target'])),
-            ('bed', "%d/%d" % (bd['temperature'], bd['target']),
-             self._temp_color(bd['temperature'], bd['target'])),
-            ('fan', "%d%%" % int(round(fansp)), COL_C3),
-            ('extrude', "%d%%" % int(round(flow)), COL_C4),
-            ('speed', "%d%%" % int(round(speed)), COL_C2),
-            ('zoffset', lay, COL_C1),
-        ]
-        for i, (icon, val, col) in enumerate(cards):
-            cx = px0 + (i % 2) * cw
-            cy = py0 + (i // 2) * ch
-            draw = (not values_only) or (self._card_cols.get(i) != col)
-            self._card_cols[i] = col
-            self._card_ops(ops, cx, cy, cw, ch, icon, val, col, draw)
-        # X / Y / Z
-        ops.append(lambda: self._gui_text_center(
-            px0, pw, py0 + 3 * ch + 2,
-            "X%.1f Y%.1f Z%.1f" % (xc, yc, zc), COL_WHITE, COL_BG, 1))
-        # Progress bar (side padding), percentage centred over it.
-        pad = 16
-        bwp = pw - 2 * pad
+        px0 = self.RAIL_W + 18
+        bwp = self.width - 100 - self.RAIL_W - 36
         n = max(4, bwp // 8)
         f = int(round(prog * n))
-        bx = px0 + pad + (bwp - n * 8) // 2
-        by = py0 + 3 * ch + 20
+        bx = px0 + (bwp - n * 8) // 2
+        by = py + 24
         if f > 0:
             ops.append(lambda bx=bx, by=by, f=f: self._gui_text(
                 bx, by, "\xdb" * f, COL_C1, COL_BG, 1))
@@ -1568,7 +1799,7 @@ class ST7796:
         tx = bx + max(0, (n * 8 - len(pct) * 8) // 2)
         ops.append(lambda tx=tx, by=by, pct=pct: self._gui_text(
             tx, by, pct, COL_WHITE, COL_BG, 1))
-        # Right hand buttons: pause/resume, cancel, tune, temperatures
+        # Right column: Pause/Continue (idx 2) + Cancel (idx 3)
         paused = ps['state'] == 'paused'
         for (x, y, w, h, idx) in self._print_btns():
             acc = self._gc(idx)
@@ -1576,20 +1807,8 @@ class ST7796:
                 self._btn_ops(ops, x, y, w, h,
                               'play48' if paused else 'pause48',
                               "Continuar" if paused else "Pausa", accent=acc)
-            elif idx == 3:
-                self._btn_ops(ops, x, y, w, h, 'x48', "Parar", COL_ERR,
-                              accent=acc)
-            elif idx == 6:
-                self._btn_ops(ops, x, y, w, h, 'settings', "Tune",
-                              accent=acc)
-            elif idx == 7:
-                self._btn_ops(ops, x, y, w, h, 'extrude', "Filamento",
-                              accent=acc)
-            elif idx == 10:
-                self._btn_ops(ops, x, y, w, h, 'unload', "Retirar",
-                              accent=acc)
-            elif idx == 11:
-                self._btn_ops(ops, x, y, w, h, 'load', "Introduzir",
+            else:
+                self._btn_ops(ops, x, y, w, h, 'x48', "Cancelar", COL_ERR,
                               accent=acc)
     def _gui_render(self, eventtime):
         if self._disp_quiet(eventtime) or self._gui_ops:
@@ -1667,6 +1886,9 @@ class ST7796:
                                            self._gc(idx)]))
         ops.append(lambda et=eventtime: self._gui_topbar(et))
         ops.append(lambda et=eventtime: self._gui_bottombar(et))
+        if self._popup is not None:
+            # modal popup drawn last, over everything
+            self._popup_view_ops(ops, eventtime)
         self._gui_enqueue(ops)
     def _raw_to_screen(self, rx, ry):
         if self.touch_swap:
@@ -2213,6 +2435,15 @@ class ST7796:
         sx, sy = self._raw_to_screen(rx, ry)
         self.gcode.respond_info("GUI tap raw=(%d,%d) -> (%d,%d)"
                                 % (rx, ry, sx, sy))
+        if self._popup is not None:
+            # A popup is modal: taps outside are ignored.
+            self._popup_tap(sx, sy, eventtime)
+            return
+        # top bar: the filament sensor icon opens the filament menu
+        if (self.width - 132) <= sx < (self.width - 100) and 2 <= sy < 28:
+            self.gcode.respond_info("GUI: Filamento")
+            self._gui_do(('scr', 'filament'), eventtime)
+            return
         for (x, y, w, h, lab, val) in self._gui_strip():
             if x <= sx < x + w and y <= sy < y + h:
                 if isinstance(val, str):
@@ -2256,30 +2487,23 @@ class ST7796:
             if self._print_view(eventtime):
                 ps = self._print_status(eventtime) or {}
                 paused = ps.get('state') == 'paused'
+                for (tx, ty, tw, th, i, k) in self._print_panel():
+                    if tx <= sx < tx + tw and ty <= sy < ty + th:
+                        self.gcode.respond_info("GUI: abrir ajuste %s" % k)
+                        self._popup_open(k, eventtime)
+                        return
                 for (x, y, w, h, idx) in self._print_btns():
                     if x <= sx < x + w and y <= sy < y + h:
                         if idx == 2:
                             self.gcode.respond_info(
-                                "GUI: %s" % ("Retomar" if paused else "Pausa"))
+                                "GUI: %s" % ("Continuar" if paused
+                                             else "Pausa"))
                             self._gui_do('RESUME' if paused else 'PAUSE',
                                          eventtime)
-                            # redraw soon so the button flips pause/play
                             self._gui_defer(eventtime, 0.8)
-                        elif idx == 3:
-                            self.gcode.respond_info("GUI: Parar")
+                        else:
+                            self.gcode.respond_info("GUI: Cancelar")
                             self._gui_do('CANCEL_PRINT', eventtime)
-                        elif idx == 6:
-                            self.gcode.respond_info("GUI: Tune")
-                            self._gui_do(('scr', 'ptune'), eventtime)
-                        elif idx == 7:
-                            self.gcode.respond_info("GUI: Filamento")
-                            self._gui_do(('scr', 'filament'), eventtime)
-                        elif idx == 10:
-                            self.gcode.respond_info("GUI: Retirar filamento")
-                            self._gui_do(('fil', 'unload'), eventtime)
-                        elif idx == 11:
-                            self.gcode.respond_info("GUI: Introduzir filamento")
-                            self._gui_do(('fil', 'load'), eventtime)
                         return
             else:
                 for (bx, by, bw, bh, kind) in self._list_btns():
