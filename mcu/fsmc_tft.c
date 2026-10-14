@@ -12,9 +12,11 @@
 // This file is distributed under the terms of the GNU GPLv3 license.
 
 #include <stdint.h>
+#include <string.h> // memcpy
 #include "internal.h" // RCC, GPIO_TypeDef
 #include "command.h" // DECL_COMMAND
 #include "sched.h" // DECL_INIT
+#include "generic/misc.h" // timer_read_time
 #include "font8x14.h"
 
 #define TFT_REG (*(volatile uint16_t *)0x60FFFFFEUL) // RS low  (A23=0)
@@ -362,6 +364,113 @@ command_tft_touch(uint32_t *args)
     sendf("tft_touch_result x=%hu y=%hu z=%hu xr=%hu yr=%hu", x, y, z, xr, yr);
 }
 DECL_COMMAND(command_tft_touch, "tft_touch");
+
+// ---------------------------------------------------------------------------
+// Icon cache: upload a bitmap once and draw it by id (~10 bytes per draw).
+// ---------------------------------------------------------------------------
+#define TFT_ICON_MAX 64
+#define TFT_ICON_POOL 24576
+static uint8_t icon_pool[TFT_ICON_POOL];
+static uint32_t icon_off[TFT_ICON_MAX];
+static uint8_t icon_w[TFT_ICON_MAX], icon_h[TFT_ICON_MAX];
+static uint32_t icon_used;
+
+// tft_idef id= w= h= off= data=<chunk>
+void
+command_tft_idef(uint32_t *args)
+{
+    uint8_t id = args[0];
+    uint16_t w = args[1], h = args[2];
+    uint16_t off = args[3];
+    uint8_t len = args[4];
+    const uint8_t *data = command_decode_ptr(args[5]);
+    uint32_t size = (uint32_t)((w + 7) / 8) * h;
+    if (id >= TFT_ICON_MAX || !w || !h || !len || off >= size
+        || off + len > size)
+        return;
+    if (off == 0) {
+        if (icon_used + size > TFT_ICON_POOL)
+            return;
+        icon_off[id] = icon_used;
+        icon_w[id] = w;
+        icon_h[id] = h;
+        icon_used += size;
+    } else if (!icon_w[id] || icon_off[id] + size > TFT_ICON_POOL) {
+        return;
+    }
+    memcpy(icon_pool + icon_off[id] + off, data, len);
+}
+DECL_COMMAND(command_tft_idef,
+             "tft_idef id=%c w=%hu h=%hu off=%hu data=%*s");
+
+// tft_idraw id= x= y= fg= bg=
+void
+command_tft_idraw(uint32_t *args)
+{
+    uint8_t id = args[0];
+    if (id >= TFT_ICON_MAX || !icon_w[id])
+        return;
+    tft_bmp(args[1], args[2], icon_w[id], icon_h[id], args[3], args[4],
+            icon_pool + icon_off[id],
+            (uint8_t)((icon_w[id] + 7) / 8 * icon_h[id]));
+}
+DECL_COMMAND(command_tft_idraw, "tft_idraw id=%c x=%hu y=%hu fg=%hu bg=%hu");
+
+// tft_str x= y= scale= text= fg= bg=
+void
+command_tft_str(uint32_t *args)
+{
+    uint16_t x = args[0], y = args[1];
+    uint8_t scale = args[2], len = args[3];
+    const uint8_t *text = command_decode_ptr(args[4]);
+    uint16_t fg = args[5], bg = args[6];
+    for (uint8_t i = 0; i < len; i++)
+        tft_char(x + i * 8 * scale, y, scale, text[i], fg, bg);
+}
+DECL_COMMAND(command_tft_str,
+             "tft_str x=%hu y=%hu scale=%c text=%*s fg=%hu bg=%hu");
+
+// ---------------------------------------------------------------------------
+// Event driven touch: the main loop samples the panel and only reports state
+// changes (plus a slow update while pressed) so the host never has to poll.
+// ---------------------------------------------------------------------------
+static uint16_t touch_threshold = 120;
+static uint32_t touch_period = 25000;
+static uint32_t touch_next, touch_last;
+static uint8_t touch_down;
+
+// tft_touch_cfg threshold= period=
+void
+command_tft_touch_cfg(uint32_t *args)
+{
+    touch_threshold = args[0];
+    if (args[1])
+        touch_period = args[1];
+}
+DECL_COMMAND(command_tft_touch_cfg, "tft_touch_cfg threshold=%hu period=%hu");
+
+void
+tft_touch_task(void)
+{
+    uint32_t now = timer_read_time();
+    if (timer_is_before(now, touch_next))
+        return;
+    touch_next = now + timer_from_us(touch_period);
+    uint16_t xr, yr;
+    uint16_t z = tp_read(XP_Z1);
+    uint16_t x = tp_sample(XP_X, &xr);
+    uint16_t y = tp_sample(XP_Y, &yr);
+    uint8_t down = z >= touch_threshold;
+    if (down != touch_down
+        || (down
+            && timer_is_before(touch_last + timer_from_us(150000), now))) {
+        touch_down = down;
+        touch_last = now;
+        sendf("tft_touch_result x=%hu y=%hu z=%hu xr=%hu yr=%hu",
+              x, y, z, xr, yr);
+    }
+}
+DECL_TASK(tft_touch_task);
 
 void
 tft_init(void)

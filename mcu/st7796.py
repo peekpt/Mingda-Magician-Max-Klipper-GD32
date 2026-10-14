@@ -99,6 +99,19 @@ GUI_SCREENS = {
     ],
     # 'print' is built dynamically from the virtual SD files (see _print_items)
     'print': [],
+    'modify': [
+        ("Bico -", "fire", ('tune', 'etemp', -1)),
+        ("Bico +", "fire", ('tune', 'etemp', 1)),
+        ("Cama -", "bed", ('tune', 'btemp', -1)),
+        ("Cama +", "bed", ('tune', 'btemp', 1)),
+        ("Flow -", "extrude", ('tune', 'flow', -1)),
+        ("Flow +", "extrude", ('tune', 'flow', 1)),
+        ("Z -", "zoffset", ('baby', -1)),
+        ("Z +", "zoffset", ('baby', 1)),
+        ("0.05", "cog", ('bstep',)),
+        ("Guardar", "save", ('bsave',)),
+        ("Voltar", "back", ('scr', 'print')),
+    ],
     'ptune': [],
     'ptemp': [],
     'estop': [],
@@ -131,7 +144,7 @@ GUI_STRIP = {
 }
 
 # Screens whose button grid is not the default 4 columns x 2 rows
-GUI_ROWS = {'print': 3}
+GUI_ROWS = {'print': 3, 'modify': 3}
 
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
 ICON = 0x100
@@ -303,6 +316,8 @@ class ST7796:
         self._ptune = 'flow'
         self._card_cols = {}
         self._fil_unloaded = False
+        self._BSTEPS = (0.05, 0.01, 0.1, 1.0)
+        self._bstep_i = 0
         self._corners = (_make_corner(self.gui_radius, False, False),
                          _make_corner(self.gui_radius, True, False),
                          _make_corner(self.gui_radius, False, True),
@@ -683,13 +698,26 @@ class ST7796:
                 self._gui_render(eventtime)
         if self.query_touch is None:
             return eventtime + 0.2
+        if self._touch_evt:
+            # The MCU samples the panel itself (tft_touch_cfg) and only reports
+            # changes - nothing to poll, so no blocking query.
+            return eventtime + 0.05
         try:
             resp = self.query_touch.send([])
         except Exception:
             return eventtime + 0.1
-        x = resp.get('x', 0)
-        y = resp.get('y', 0)
-        z = resp.get('z', 0)
+        self._touch_sample(resp.get('x', 0), resp.get('y', 0),
+                           resp.get('z', 0), eventtime)
+        return eventtime + (0.03 if self.gui else 0.04)
+    def _touch_report(self, params):
+        # Unsolicited tft_touch_result from the MCU (event driven touch).
+        try:
+            et = self.printer.get_reactor().monotonic()
+            self._touch_sample(params.get('x', 0), params.get('y', 0),
+                               params.get('z', 0), et)
+        except Exception:
+            logging.exception("st7796: touch report failed")
+    def _touch_sample(self, x, y, z, eventtime):
         if self.touch_debug:
             self._dbg_i = (getattr(self, '_dbg_i', 0) + 1) % 4
             if self._dbg_i == 0:
@@ -709,7 +737,7 @@ class ST7796:
                                     m['xmax'], m['ymin'], m['ymax'],
                                     m['xz'], m['yz']))
                 self._mon = None
-            return eventtime + 0.04
+            return
         if self.gui:
             try:
                 st = self.printer.lookup_object('print_stats').get_status(
@@ -736,7 +764,7 @@ class ST7796:
                         and abs(self._yl - self._y0) < self.touch_swipe):
                     self._gui_tap((self._x0 + self._xl) // 2,
                                   (self._y0 + self._yl) // 2, eventtime)
-            return eventtime + 0.03
+            return
         if z >= self.touch_threshold:
             if self.touch_debug:
                 self.gcode.respond_info("touch raw x=%d y=%d z=%d" % (x, y, z))
@@ -748,7 +776,6 @@ class ST7796:
         elif self._touched:
             self._touched = False
             self._handle_gesture(eventtime)
-        return eventtime + 0.04
     def _handle_gesture(self, eventtime):
         dt = eventtime - self._t0
         dx = self._xl - self._x0
@@ -1472,7 +1499,7 @@ class ST7796:
                 self._btn_ops(ops, x, y, w, h, 'settings', "Tune",
                               accent=acc)
             elif idx == 7:
-                self._btn_ops(ops, x, y, w, h, 'thermo', "Temps", accent=acc)
+                self._btn_ops(ops, x, y, w, h, 'cog', "Modificar", accent=acc)
             elif idx == 10:
                 self._btn_ops(ops, x, y, w, h, 'unload', "Retirar",
                               accent=acc)
@@ -1528,6 +1555,8 @@ class ST7796:
             elif isinstance(action, tuple) and action[0] == 'fsens':
                 en, det = self._filament_status(eventtime)
                 label = "Filam ON" if en else "Filam OFF"
+            elif isinstance(action, tuple) and action[0] == 'bstep':
+                label = "%.2f" % self._BSTEPS[self._bstep_i]
             sc = self._scaled_icon(icon)
             iw, ih = (sc[0], sc[1]) if sc else (0, 0)
             bx, by = x + i2, y + i2
@@ -1915,6 +1944,22 @@ class ST7796:
             i = self._ext_steps.index(self._ext_step)
             self._ext_step = self._ext_steps[(i + 1) % len(self._ext_steps)]
             self._gui_render(eventtime)
+        elif isinstance(action, tuple) and action[0] == 'baby':
+            amt = self._BSTEPS[self._bstep_i] * action[1]
+            self.gcode.respond_info("GUI baby step: %+.3f" % amt)
+            self._gui_msg = "Baby step %+.3f (Guardar p/ fixar)" % amt
+            self._gui_msg_until = (
+                self.printer.get_reactor().monotonic() + 4.)
+            script = ('SET_GCODE_OFFSET Z_ADJUST=%.3f MOVE=1' % amt)
+        elif isinstance(action, tuple) and action[0] == 'bstep':
+            self._bstep_i = (self._bstep_i + 1) % len(self._BSTEPS)
+            self._gui_render(eventtime)
+        elif isinstance(action, tuple) and action[0] == 'bsave':
+            self.gcode.respond_info("GUI: gravar o Z offset na probe")
+            self._gui_msg = "A gravar o Z offset na probe (SAVE_CONFIG)..."
+            self._gui_msg_until = (
+                self.printer.get_reactor().monotonic() + 20.)
+            script = 'Z_OFFSET_APPLY_PROBE\nSAVE_CONFIG'
         elif isinstance(action, tuple) and action[0] == 'fil':
             try:
                 st = self.printer.lookup_object('print_stats').get_status(
@@ -2107,8 +2152,8 @@ class ST7796:
                             self.gcode.respond_info("GUI: Tune")
                             self._gui_do(('scr', 'ptune'), eventtime)
                         elif idx == 7:
-                            self.gcode.respond_info("GUI: Temperaturas")
-                            self._gui_do(('scr', 'ptemp'), eventtime)
+                            self.gcode.respond_info("GUI: Modificar")
+                            self._gui_do(('scr', 'modify'), eventtime)
                         elif idx == 10:
                             self.gcode.respond_info("GUI: Retirar filamento")
                             self._gui_do(('fil', 'unload'), eventtime)
