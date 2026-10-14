@@ -99,21 +99,17 @@ GUI_SCREENS = {
     ],
     # 'print' is built dynamically from the virtual SD files (see _print_items)
     'print': [],
-    'modify': [
-        ("Bico -", "fire", ('tune', 'etemp', -1)),
-        ("Bico +", "fire", ('tune', 'etemp', 1)),
-        ("Cama -", "bed", ('tune', 'btemp', -1)),
-        ("Cama +", "bed", ('tune', 'btemp', 1)),
-        ("Flow -", "extrude", ('tune', 'flow', -1)),
-        ("Flow +", "extrude", ('tune', 'flow', 1)),
-        ("Z -", "zoffset", ('baby', -1)),
-        ("Z +", "zoffset", ('baby', 1)),
-        ("0.05", "cog", ('bstep',)),
-        ("Guardar", "save", ('bsave',)),
-        ("Voltar", "back", ('scr', 'print')),
+    'filament': [
+        ("Ejetar", "unload", ('fil', 'unload')),
+        ("Baby", "zoffset", ('baby', 0)),
+        ("0.01", "cog", ('bstep',)),
+        ("Save", "save", ('bsave',)),
+        ("Inserir", "load", ('fil', 'load')),
+        ("Z +", "up", ('baby', 1)),
+        ("Z -", "down", ('baby', -1)),
+        ("", "", None),
     ],
     'ptune': [],
-    'ptemp': [],
     'estop': [],
     'power': [
         ("Emergency", "alert", 'M112'),
@@ -144,7 +140,10 @@ GUI_STRIP = {
 }
 
 # Screens whose button grid is not the default 4 columns x 2 rows
-GUI_ROWS = {'print': 3, 'modify': 3}
+GUI_ROWS = {'print': 2}
+
+# Friendly titles for the top bar (otherwise the screen id is shown)
+GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filamento', 'estop': 'Confirmar'}
 
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
 ICON = 0x100
@@ -323,8 +322,9 @@ class ST7796:
         self._ptune = 'flow'
         self._card_cols = {}
         self._fil_unloaded = False
-        self._BSTEPS = (0.05, 0.01, 0.1, 1.0)
-        self._bstep_i = 0
+        self._BSTEPS = (0.005, 0.01, 0.1, 0.5)
+        self._bstep_i = 1
+        self._baby_dirty = False
         self._corners = (_make_corner(self.gui_radius, False, False),
                          _make_corner(self.gui_radius, True, False),
                          _make_corner(self.gui_radius, False, True),
@@ -1089,7 +1089,7 @@ class ST7796:
                         bw, bh, idx, item))
         return out
     def _gui_rail(self):
-        back = ('scr', 'print') if self.gui_screen in ('ptune', 'ptemp') \
+        back = ('scr', 'print') if self.gui_screen in ('ptune', 'filament') \
             else ('scr', 'main')
         items = [('back24', back), ('home24', ('scr', 'main')),
                  ('files24', ('scr', 'print')), ('alert24', ('scr', 'power'))]
@@ -1157,7 +1157,9 @@ class ST7796:
             self._gui_heater('bed', 7, 120, bd)
         if self.gui_screen != 'print':
             self._gui_text_center(0, self.width, 7,
-                                  (self.gui_screen.capitalize()
+                                  (GUI_TITLES.get(
+                                      self.gui_screen,
+                                      self.gui_screen.capitalize())
                                    + ' ' * 14)[:14], COL_WHITE, bg, 1)
         try:
             dur = int(self.printer.lookup_object('print_stats').get_status(
@@ -1296,7 +1298,14 @@ class ST7796:
             return reactor.NEVER
         t0 = reactor.monotonic()
         while ops:
-            ops.pop(0)()
+            try:
+                ops.pop(0)()
+            except Exception:
+                # e.g. the serial link is closing (shutdown/restart): drop the
+                # rest of the redraw instead of taking klippy down.
+                logging.exception("st7796: display draw failed")
+                self._gui_ops = None
+                return reactor.NEVER
             if reactor.monotonic() - t0 >= 0.010:
                 break
         if ops:
@@ -1574,7 +1583,8 @@ class ST7796:
                 self._btn_ops(ops, x, y, w, h, 'settings', "Tune",
                               accent=acc)
             elif idx == 7:
-                self._btn_ops(ops, x, y, w, h, 'cog', "Modificar", accent=acc)
+                self._btn_ops(ops, x, y, w, h, 'extrude', "Filamento",
+                              accent=acc)
             elif idx == 10:
                 self._btn_ops(ops, x, y, w, h, 'unload', "Retirar",
                               accent=acc)
@@ -1613,8 +1623,6 @@ class ST7796:
             self._net_view_ops(ops, eventtime)
         elif self.gui_screen == 'ptune':
             self._ptune_view_ops(ops, eventtime)
-        elif self.gui_screen == 'ptemp':
-            self._ptemp_view_ops(ops, eventtime)
         elif self.gui_screen == 'estop':
             self._estop_view_ops(ops, eventtime)
         g = self.gui_btn_gap
@@ -1631,7 +1639,15 @@ class ST7796:
                 en, det = self._filament_status(eventtime)
                 label = "Filam ON" if en else "Filam OFF"
             elif isinstance(action, tuple) and action[0] == 'bstep':
-                label = "%.2f" % self._BSTEPS[self._bstep_i]
+                label = "%g" % self._BSTEPS[self._bstep_i]
+            elif isinstance(action, tuple) and action[0] == 'baby' \
+                    and action[1] == 0:
+                try:
+                    gz = self.printer.lookup_object(
+                        'gcode_move').get_status(eventtime)['gcode_position']
+                    label = "Baby %.3f" % float(gz[2])
+                except Exception:
+                    label = "Baby -"
             sc = self._scaled_icon(icon)
             iw, ih = (sc[0], sc[1]) if sc else (0, 0)
             bx, by = x + i2, y + i2
@@ -1681,7 +1697,8 @@ class ST7796:
     _MOVE_TOKENS = ('G28', 'G29', 'G1', 'G2', 'G3', 'SDCARD_PRINT_FILE',
                     'PROBE_CALIBRATE', 'BED_MESH_CALIBRATE', 'TESTZ',
                     'LOAD_FILAMENT', 'UNLOAD_FILAMENT', 'RESTART',
-                    'CANCEL_PRINT', 'SET_GCODE_OFFSET')
+                    'CANCEL_PRINT', 'SET_GCODE_OFFSET', 'SAVE_CONFIG',
+                    'Z_OFFSET_APPLY_PROBE')
     def _gui_run_action(self, script):
         # Run GUI gcode in one serialised greenlet (beep + action together), so
         # two actions never interleave, and mark the display busy meanwhile.
@@ -1919,28 +1936,62 @@ class ST7796:
             return "%d%%" % int(round(v * 100))
         except Exception:
             return "--"
+    _TUNE_ROWS = (('Bico', 'etemp', 5.), ('Cama', 'btemp', 5.),
+                  ('Flow', 'flow', 1.))
+    def _tune_row_btns(self):
+        # (label, value, colour, key, row_y, row_h, plus_rect, minus_rect)
+        try:
+            ex = self.printer.lookup_object('extruder').get_status(0)
+            bd = self.printer.lookup_object('heater_bed').get_status(0)
+            gm = self.printer.lookup_object('gcode_move').get_status(0)
+        except Exception:
+            return []
+        vals = {
+            'etemp': ("%d/%d" % (ex['temperature'], ex['target']),
+                      self._temp_color(ex['temperature'], ex['target'])),
+            'btemp': ("%d/%d" % (bd['temperature'], bd['target']),
+                      self._temp_color(bd['temperature'], bd['target'])),
+            'flow': ("%d%%" % int(round(float(
+                gm.get('extrude_factor') or 1.) * 100)), COL_C4),
+        }
+        x1 = self.width
+        y0, y1 = self.TOP_H, self.height - self.STRIP_H
+        rh = (y1 - y0) // len(self._TUNE_ROWS)
+        bw = 84
+        bh = min(64, rh - 14)
+        out = []
+        for i, (lab, key, step) in enumerate(self._TUNE_ROWS):
+            val, col = vals[key]
+            ry = y0 + i * rh
+            by = ry + (rh - bh) // 2
+            plus = (x1 - 2 * bw - 22, by, bw, bh, key, step)
+            minus = (x1 - bw - 10, by, bw, bh, key, -step)
+            out.append((lab, val, col, key, ry, rh, plus, minus))
+        return out
+    def _sign_btn(self, ops, x, y, w, h, sign, accent):
+        ops.append(lambda x=x, y=y, w=w, h=h: self._gui_round(
+            x, y, w, h, self.gui_btn_bg))
+        tw = len(sign) * 8 * 3
+        ops.append(lambda x=x, y=y, w=w, h=h, sign=sign, tw=tw:
+                   self._gui_text(x + max(0, (w - tw) // 2),
+                                  y + max(0, (h - 48) // 2), sign,
+                                  COL_WHITE, self.gui_btn_bg, 3))
+        if accent is not None:
+            ops.append(lambda x=x, y=y, w=w, h=h, accent=accent:
+                       self.cmd_rect.send([x + 10, y + h - 11, w - 20, 5,
+                                           accent]))
     def _ptune_view_ops(self, ops, eventtime):
-        ix0 = self.RAIL_W
-        ix1 = self.RAIL_W + 2 * ((self.width - self.RAIL_W) // 4)
-        iy0 = self.TOP_H
-        ih = self.height - self.STRIP_H - iy0
-        names = {'flow': 'FLOW', 'speed': 'SPEED', 'fan': 'FAN'}
-        name = names.get(self._ptune, 'FLOW')
-        val = self._ptune_value(eventtime)
-        ty = iy0 + (ih - (48 + 16 + 80)) // 2
-        ops.append(lambda ty=ty, name=name: self._gui_text_center(
-            ix0, ix1 - ix0, ty, name, COL_WHITE, COL_BG, 3))
-        ops.append(lambda ty=ty, val=val: self._gui_text_center(
-            ix0, ix1 - ix0, ty + 64, val, COL_C1, COL_BG, 5))
-        for (x, y, w, h, idx, item) in self._gui_buttons():
-            if idx == 2:
-                self._btn_ops(ops, x, y, w, h, 'settings', "Trocar")
-            elif idx == 6:
-                self._btn_ops(ops, x, y, w, h, 'back', "Voltar")
-            elif idx == 3:
-                self._btn_ops(ops, x, y, w, h, 'up', "+")
-            elif idx == 7:
-                self._btn_ops(ops, x, y, w, h, 'down', "-")
+        # Table: name + current/target value on the left, +/- buttons on the
+        # right (fixed step per row).
+        for (lab, val, col, key, ry, rh, plus, minus) in self._tune_row_btns():
+            ops.append(lambda ry=ry, lab=lab: self._gui_text(
+                self.RAIL_W + 10, ry + 8, lab, COL_WHITE, COL_BG, 1))
+            ops.append(lambda ry=ry, val=val, col=col: self._gui_text(
+                self.RAIL_W + 10, ry + 30, val, col, COL_BG, 2))
+            p = plus
+            self._sign_btn(ops, p[0], p[1], p[2], p[3], "+", self._gc(0))
+            m = minus
+            self._sign_btn(ops, m[0], m[1], m[2], m[3], "-", self._gc(1))
     def _ptemp_view_ops(self, ops, eventtime):
         try:
             ex = self.printer.lookup_object('extruder').get_status(eventtime)
@@ -2022,18 +2073,25 @@ class ST7796:
         elif isinstance(action, tuple) and action[0] == 'baby':
             amt = self._BSTEPS[self._bstep_i] * action[1]
             self.gcode.respond_info("GUI baby step: %+.3f" % amt)
-            self._gui_msg = "Baby step %+.3f (Guardar p/ fixar)" % amt
+            self._gui_msg = "Baby step %+.3f (Save p/ fixar)" % amt
             self._gui_msg_until = (
                 self.printer.get_reactor().monotonic() + 4.)
+            self._baby_dirty = True
             script = ('SET_GCODE_OFFSET Z_ADJUST=%.3f MOVE=1' % amt)
         elif isinstance(action, tuple) and action[0] == 'bstep':
             self._bstep_i = (self._bstep_i + 1) % len(self._BSTEPS)
             self._gui_render(eventtime)
         elif isinstance(action, tuple) and action[0] == 'bsave':
-            self.gcode.respond_info("GUI: gravar o Z offset na probe")
-            self._gui_msg = "A gravar o Z offset na probe (SAVE_CONFIG)..."
+            if not self._baby_dirty:
+                # Nothing changed - just leave the menu.
+                self.gui_screen = 'print'
+                self._gui_render(eventtime)
+                return
+            self.gcode.respond_info("GUI: gravar o baby step na probe")
+            self._gui_msg = "A gravar o baby step (SAVE_CONFIG)..."
             self._gui_msg_until = (
                 self.printer.get_reactor().monotonic() + 20.)
+            self._baby_dirty = False
             script = 'Z_OFFSET_APPLY_PROBE\nSAVE_CONFIG'
         elif isinstance(action, tuple) and action[0] == 'fil':
             try:
@@ -2176,28 +2234,15 @@ class ST7796:
                     self.gcode.respond_info("GUI: %s" % kind)
                     self._gui_do(('estop', kind), eventtime)
                     return
-        if self.gui_screen in ('ptune', 'ptemp'):
-            for (x, y, w, h, idx, item) in self._gui_buttons():
-                if x <= sx < x + w and y <= sy < y + h:
-                    if self.gui_screen == 'ptune':
-                        if idx == 2:
-                            self._gui_do(('ptv',), eventtime)
-                        elif idx == 3:
-                            self._gui_do(('tune', self._ptune, 1), eventtime)
-                        elif idx == 7:
-                            self._gui_do(('tune', self._ptune, -1), eventtime)
-                        elif idx == 6:
-                            self._gui_do(('scr', 'print'), eventtime)
-                    else:
-                        if idx == 4:
-                            self._gui_do(('tune', 'btemp', 1), eventtime)
-                        elif idx == 5:
-                            self._gui_do(('tune', 'btemp', -1), eventtime)
-                        elif idx == 6:
-                            self._gui_do(('tune', 'etemp', 1), eventtime)
-                        elif idx == 7:
-                            self._gui_do(('tune', 'etemp', -1), eventtime)
-                    return
+        if self.gui_screen == 'ptune':
+            for (lab, val, col, key, ry, rh, plus, minus) in \
+                    self._tune_row_btns():
+                for (bx, by, bw, bh, k, step) in (plus, minus):
+                    if bx <= sx < bx + bw and by <= sy < by + bh:
+                        self.gcode.respond_info("GUI tune %s %+g" % (k, step))
+                        self._gui_do(('tune', k, 1 if step > 0 else -1),
+                                     eventtime)
+                        return
         if self.gui_screen == 'network':
             for (x, y, w, h, idx, item) in self._gui_buttons():
                 if x <= sx < x + w and y <= sy < y + h:
@@ -2227,8 +2272,8 @@ class ST7796:
                             self.gcode.respond_info("GUI: Tune")
                             self._gui_do(('scr', 'ptune'), eventtime)
                         elif idx == 7:
-                            self.gcode.respond_info("GUI: Modificar")
-                            self._gui_do(('scr', 'modify'), eventtime)
+                            self.gcode.respond_info("GUI: Filamento")
+                            self._gui_do(('scr', 'filament'), eventtime)
                         elif idx == 10:
                             self.gcode.respond_info("GUI: Retirar filamento")
                             self._gui_do(('fil', 'unload'), eventtime)
