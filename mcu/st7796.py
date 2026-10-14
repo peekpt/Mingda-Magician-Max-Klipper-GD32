@@ -170,11 +170,25 @@ def _x_fn(i, j, n):
     return abs(i - j) <= 0.08 * n or abs(i - (n - 1 - j)) <= 0.08 * n
 
 
+def _hourglass_fn(i, j, n):
+    # Simple hourglass: solid shape that narrows towards the middle.
+    m = 0.12 * n
+    if not (m <= i < n - m):
+        return False
+    if j < 0.13 * n or j >= 0.87 * n:
+        return True
+    c = 0.5 * n
+    d = abs(j - c) / (0.37 * n)
+    hw = (n * 0.44) * d + 1.0
+    return abs(i - c) <= hw
+
+
 # Icons we generate locally (not part of the MDI set).
 EXTRA_ICONS = {
     'pause48': _mk_bmp(48, _pause_fn),
     'play48': _mk_bmp(48, _play_fn),
     'x48': _mk_bmp(48, _x_fn),
+    'hourglass20': _mk_bmp(20, _hourglass_fn),
 }
 
 
@@ -281,6 +295,7 @@ class ST7796:
         self._zmax_v = 0.
         self._net_cache = None
         self._net_t = 0.
+        self._ui_live_t = 0.
         self._ptune = 'flow'
         self._card_cols = {}
         self._fil_unloaded = False
@@ -1035,11 +1050,11 @@ class ST7796:
                 eventtime)['print_duration'])
         except Exception:
             dur = 0
-        self._gui_text(self.width - 52, 7,
+        self._gui_text(self.width - 96, 7,
                        "%02d:%02d" % (dur // 3600, (dur // 60) % 60),
                        COL_WHITE, bg, 1)
         if self.gui_version:
-            self._gui_text(self.width - 140, 7,
+            self._gui_text(self.width - 170, 7,
                            (self.gui_version + ' ' * 8)[:8], COL_DIM, bg, 1)
         # Filament runout indicator: green = filament ok, red = runout,
         # grey = sensor disabled/unavailable.
@@ -1049,7 +1064,14 @@ class ST7796:
             fcol = COL_OK
         elif en and not det:
             fcol = COL_ERR
-        self._gui_icon_at('extrude', self.width - 78, 8, fcol, bg, 18)
+        self._gui_icon_at('extrude', self.width - 124, 8, fcol, bg, 18)
+        # Hourglass: dark grey while the UI is live, red when the display has not
+        # been able to draw for a while (muted during homing/moves, or a redraw
+        # backlog) - i.e. "dead time".
+        now = self.printer.get_reactor().monotonic()
+        dead = (now - self._ui_live_t) > 1.5
+        self._gui_icon_at('hourglass20', self.width - 28, 9,
+                          COL_ERR if dead else COL_DIM, bg, 18)
     def _gui_bottombar(self, eventtime, fill=True):
         bg = self.gui_bar_bg
         y = self.height - self.STRIP_H
@@ -1142,6 +1164,7 @@ class ST7796:
             reactor.register_callback(self._gui_drain)
         else:
             self._gui_ops = None
+            self._ui_live_t = reactor.monotonic()
         return reactor.NEVER
     def _gui_defer(self, eventtime, delay=0.2):
         t = eventtime + delay
