@@ -52,7 +52,7 @@ GUI_SCREENS = {
         ("Temperatura", "heatup", ('scr', 'temperature')),
         ("Extruder", "extrude", ('scr', 'extrude')),
         ("Imprimir", "print", ('scr', 'print')),
-        ("Nivelar", "bedmesh", 'G29'),
+        ("Nivelar", "bedmesh", ('scr', 'nivelar')),
         ("Z Calibrar", "zoffset", ('scr', 'probe')),
         ("Mais", "settings", ('scr', 'more')),
         ("Home", "home", 'G28'),
@@ -167,7 +167,8 @@ POPUP_ITEMS = {
 
 # Friendly titles for the top bar (otherwise the screen id is shown)
 GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filamento',
-              'estop': 'Confirmar', 'mesh': 'Nivelar'}
+              'estop': 'Confirmar', 'mesh': 'Nivelar',
+              'nivelar': 'Nivelar'}
 
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
 ICON = 0x100
@@ -231,6 +232,7 @@ EXTRA_ICONS = {
     'play48': _mk_bmp(48, _play_fn),
     'x48': _mk_bmp(48, _x_fn),
     'hourglass20': _mk_bmp(20, _hourglass_fn),
+    'dot10': _mk_bmp(10, _dot_fn),
     'dot12': _mk_bmp(12, _dot_fn),
     'dot18': _mk_bmp(18, _dot_fn),
     'dot30': _mk_bmp(30, _dot_fn),
@@ -303,9 +305,11 @@ class ST7796:
                                desc="Force a full GUI redraw")
         gcode.register_command('TFT_NET', self.cmd_TFT_NET,
                                desc="Show network info / send SSDP announce")
-        # Wrap BED_MESH_CALIBRATE so the display can show the probing map.
+        # Wrap BED_MESH_CALIBRATE / G29 so the display can show the probing map.
         self._mesh_base = None
+        self._g29_base = None
         self._mesh_hooked = False
+        self._mesh_arm = 0.
         self._mesh_hook()
         # Touch (XPT2046)
         self.gcode = gcode
@@ -1283,32 +1287,74 @@ class ST7796:
         self._draw_hourglass(True)
     # --- bed mesh probing map ---------------------------------------------
     def _mesh_hook(self):
-        # bed_mesh (and any BED_MESH_CALIBRATE macro) may be configured after
-        # this section, so also retry once the printer is fully built.
-        if self._mesh_hooked or self._mesh_base is not None:
+        # bed_mesh (and the BED_MESH_CALIBRATE / G29 macros) may be configured
+        # after this section, so also retry once the printer is fully built.
+        if self._mesh_base is None:
+            try:
+                base = self.gcode.register_command('BED_MESH_CALIBRATE', None)
+            except Exception:
+                base = None
+            if base is not None:
+                self._mesh_base = base
+                try:
+                    self.gcode.register_command('BED_MESH_CALIBRATE',
+                                                self._cmd_mesh_calibrate)
+                    logging.info("st7796: BED_MESH_CALIBRATE hooked (probe map)")
+                except Exception:
+                    logging.exception("st7796: cannot hook BED_MESH_CALIBRATE")
+        if self._g29_base is None:
+            try:
+                base = self.gcode.register_command('G29', None)
+            except Exception:
+                base = None
+            if base is not None:
+                self._g29_base = base
+                try:
+                    self.gcode.register_command('G29', self._cmd_g29)
+                    logging.info("st7796: G29 hooked (leveling notice)")
+                except Exception:
+                    logging.exception("st7796: cannot hook G29")
+
+    def _mesh_notice(self, secs=1800.):
+        # Warn the user that leveling heats the bed and the hotend.
+        self._gui_msg = ("Nivelamento: aquece cama e bico. Limpa o bico"
+                         " antes de continuar!")
+        self._gui_msg_until = (
+            self.printer.get_reactor().monotonic() + secs)
+
+    def _cmd_g29(self, gcmd):
+        if self._g29_base is None:
             return
+        reactor = self.printer.get_reactor()
+        prev = self.gui_screen
         try:
-            base = self.gcode.register_command('BED_MESH_CALIBRATE', None)
+            self._mesh_notice()
+            if self.gui:
+                self.gui_screen = 'mesh'
+                self._gui_render(reactor.monotonic())
         except Exception:
-            return
-        if base is None:
-            return
-        self._mesh_base = base
-        self._mesh_hooked = True
+            logging.exception("st7796: g29 notice failed")
         try:
-            self.gcode.register_command('BED_MESH_CALIBRATE',
-                                        self._cmd_mesh_calibrate)
-            logging.info("st7796: BED_MESH_CALIBRATE hooked (probe map)")
-        except Exception:
-            logging.exception("st7796: cannot hook BED_MESH_CALIBRATE")
+            self._g29_base(gcmd)
+        finally:
+            if self.gui:
+                self.gui_screen = prev or 'print'
+                self._gui_defer(reactor.monotonic(), 0.3)
+            self._gui_msg = None
+            self._gui_msg_until = 0.
 
     def _cmd_mesh_calibrate(self, gcmd):
         if self._mesh_base is None:
             return
         reactor = self.printer.get_reactor()
-        self._mesh_prev_screen = self.gui_screen
+        prev = self.gui_screen
         self._mesh_active = True
         self._mesh_done = -1
+        self._mesh_arm = 0.
+        try:
+            self._mesh_notice(240.)
+        except Exception:
+            pass
         if self.gui:
             self.gui_screen = 'mesh'
             self._gui_render(reactor.monotonic())
@@ -1317,32 +1363,8 @@ class ST7796:
         finally:
             self._mesh_active = False
             if self.gui:
-                self.gui_screen = self._mesh_prev_screen or 'print'
+                self.gui_screen = prev or 'print'
                 self._gui_defer(reactor.monotonic(), 0.3)
-
-    def _mesh_pts(self):
-        # (screen_x, screen_y, probe index) for the mesh points (serpentine)
-        mn, mx, cx, cy = (0., 0.), (300., 300.), 4, 4
-        try:
-            st = self.printer.lookup_object('bed_mesh').get_status(0)
-            mn, mx = st.get('mesh_min', mn), st.get('mesh_max', mx)
-            cfg = self.printer.lookup_object('configfile').get_status(0)[
-                'settings'].get('bed_mesh', {})
-            pc = cfg.get('probe_count', (4, 4))
-            cx, cy = int(pc[0]), int(pc[1])
-        except Exception:
-            pass
-        cx = max(2, cx)
-        cy = max(2, cy)
-        gx0, gy0, gw, gh = self.RAIL_W + 14, self.TOP_H + 18, 200, 200
-        out = []
-        for j in range(cy):
-            for m in range(cx):
-                i = m if j % 2 == 0 else cx - 1 - m
-                sx = gx0 + int(i * (gw - 14) / (cx - 1))
-                sy = gy0 + int((cy - 1 - j) * (gh - 14) / (cy - 1))
-                out.append((sx, sy, j * cx + m, i, j))
-        return out
 
     def _mesh_geo(self):
         # (mesh_min, mesh_max, cols, rows) of the configured bed mesh.
@@ -1399,16 +1421,14 @@ class ST7796:
             self._mesh_done = best[1]
         cols = sorted({p[0] for p in pts})
         rows = sorted({p[1] for p in pts})
-        gx0, gx1 = cols[0] + 6, cols[-1] + 6
-        gy0, gy1 = rows[0] + 6, rows[-1] + 6
-        # the grid itself
+        # the grid: one thin line per row/column, crossing at the probe points
         for gx in cols:
-            ops.append(lambda gx=gx, a=gy0, b=gy1: self.cmd_rect.send(
-                [gx + 6, a, 1, b - a, COL_DIM]))
+            ops.append(lambda gx=gx, a=rows[0], b=rows[-1]: self.cmd_rect.send(
+                [gx, a, 1, b - a + 1, COL_DIM]))
         for gy in rows:
-            ops.append(lambda gy=gy, a=gx0, b=gx1: self.cmd_rect.send(
-                [a, gy + 6, b - a, 1, COL_DIM]))
-        dot = EXTRA_ICONS['dot12']
+            ops.append(lambda gy=gy, a=cols[0], b=cols[-1]: self.cmd_rect.send(
+                [a, gy, b - a + 1, 1, COL_DIM]))
+        dot = EXTRA_ICONS['dot10']
         big = EXTRA_ICONS['dot30']
         for (sx, sy, idx, i, j) in pts:
             if best is not None and idx == best[1]:
@@ -1417,11 +1437,14 @@ class ST7796:
             else:
                 col = COL_OK if idx <= self._mesh_done else COL_ACTIVE
                 ops.append(lambda sx=sx, sy=sy, c=col, d=dot: self._bmp_at(
-                    d, sx - 6, sy - 6, c, COL_BG, ('dot12', 0)))
+                    d, sx - 5, sy - 5, c, COL_BG, ('dot10', 0)))
         ops.append(lambda: self._gui_text(
-            self.RAIL_W + 22, rows[-1] + 24,
+            self.RAIL_W + 22, rows[-1] + 22,
             "Ponto %d / %d" % (self._mesh_done + 1, len(pts)),
             COL_WHITE, COL_BG, 1))
+        ops.append(lambda: self._gui_text(
+            self.RAIL_W + 22, rows[-1] + 40,
+            "Aquece cama+bico - limpa o bico!", COL_WARN, COL_BG, 1))
         # temperatures (icon + value)
         try:
             ex = self.printer.lookup_object('extruder').get_status(eventtime)
@@ -1440,14 +1463,53 @@ class ST7796:
                                           ('mticon', icon, 22)))
                 ops.append(lambda tx=tx, ty=ty, c=col, s=lbl:
                            self._gui_text(tx + 30, ty + 3, s, c, COL_BG, 1))
-        # abort button
-        bx, by, bw, bh = tx - 6, self.TOP_H + 118, 188, 92
+        # abort button (two taps: it stops the printer with M112)
+        bx, by, bw, bh = self._mesh_abort_btn()
+        armed = eventtime < self._mesh_arm
+        lab = "CONFIRMAR" if armed else "ABORTAR"
         ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self._gui_round(
             bx, by, bw, bh, COL_ERR))
         ops.append(lambda bx=bx, by=by, bw=bw: self._gui_icon_at(
             'x48', bx + (bw - 48) // 2, by + 8, COL_WHITE, COL_ERR, 48))
-        ops.append(lambda bx=bx, by=by, bw=bw: self._gui_text_center(
-            bx, bw, by + 62, "ABORTAR", COL_WHITE, COL_ERR, 1))
+        ops.append(lambda bx=bx, by=by, bw=bw, lab=lab: self._gui_text_center(
+            bx, bw, by + 62, lab, COL_WHITE, COL_ERR, 1))
+
+    def _mesh_abort_btn(self):
+        return (self.width - 202, self.TOP_H + 118, 188, 92)
+
+    # --- leveling warning / confirm screen --------------------------------
+    def _nivelar_btns(self):
+        bw = (self.width - self.RAIL_W) // 4
+        y = self.TOP_H + 120
+        h = min(110, self.height - self.STRIP_H - y - 12)
+        return [(self.RAIL_W + 6, y, 2 * bw - 12, h, 'yes'),
+                (self.RAIL_W + 2 * bw + 6, y, 2 * bw - 12, h, 'no')]
+
+    def _nivelar_view_ops(self, ops, eventtime):
+        ops.append(lambda: self._gui_text_center(
+            0, self.width, self.TOP_H + 14, "NIVELAMENTO DA CAMA",
+            COL_WARN, COL_BG, 2))
+        ops.append(lambda: self._gui_text_center(
+            0, self.width, self.TOP_H + 52,
+            "Vai aquecer a cama a 60C e o bico a 200C",
+            COL_WHITE, COL_BG, 1))
+        ops.append(lambda: self._gui_text_center(
+            0, self.width, self.TOP_H + 72, "para fazer o teste de nivelamento.",
+            COL_WHITE, COL_BG, 1))
+        ops.append(lambda: self._gui_text_center(
+            0, self.width, self.TOP_H + 96, "LIMPA O BICO ANTES DE CONTINUAR!",
+            COL_WARN, COL_BG, 1))
+        for (x, y, w, h, kind) in self._nivelar_btns():
+            if kind == 'yes':
+                bg, lab = COL_OK, "INICIAR"
+            else:
+                bg, lab = self.gui_btn_bg, "CANCELAR"
+            ops.append(lambda x=x, y=y, w=w, h=h, bg=bg: self._gui_round(
+                x, y, w, h, bg))
+            tx = x + max(0, (w - len(lab) * 24) // 2)
+            ty = y + max(0, (h - 42) // 2)
+            ops.append(lambda tx=tx, ty=ty, lab=lab, bg=bg:
+                       self._gui_text(tx, ty, lab, COL_WHITE, bg, 3))
 
     # --- inline adjustment panel (drawn where the info tiles are) --------
     def _baby_load(self):
@@ -2126,6 +2188,8 @@ class ST7796:
             self._estop_view_ops(ops, eventtime)
         elif self.gui_screen == 'mesh':
             self._mesh_view_ops(ops, eventtime)
+        elif self.gui_screen == 'nivelar':
+            self._nivelar_view_ops(ops, eventtime)
         g = self.gui_btn_gap
         i2 = g // 2
         for (x, y, w, h, idx, item) in self._gui_buttons():
@@ -2758,16 +2822,33 @@ class ST7796:
                         self._gui_do(('tune', k, 1 if step > 0 else -1),
                                      eventtime)
                         return
+        if self.gui_screen == 'nivelar':
+            for (x, y, w, h, kind) in self._nivelar_btns():
+                if x <= sx < x + w and y <= sy < y + h:
+                    self.gcode.respond_info("GUI nivelar: %s" % kind)
+                    if kind == 'yes':
+                        self._gui_do('G29', eventtime)
+                    else:
+                        self._gui_do(('scr', 'print'), eventtime)
+                    return
         if self.gui_screen == 'mesh':
-            bx = self.RAIL_W + 236
-            by = self.TOP_H + 120
-            if bx <= sx < bx + 180 and by <= sy < by + 96:
-                self.gcode.respond_info(
-                    "GUI: ABORTAR nivelamento (M112 - depois FIRMWARE_RESTART)")
-                self._gui_msg = "Nivelamento abortado (M112)"
-                self._gui_msg_until = (
-                    self.printer.get_reactor().monotonic() + 15.)
-                self._gui_run_action("M112")
+            bx, by, bw, bh = self._mesh_abort_btn()
+            if bx <= sx < bx + bw and by <= sy < by + bh:
+                now = self.printer.get_reactor().monotonic()
+                if now < self._mesh_arm:
+                    self.gcode.respond_info(
+                        "GUI: ABORTAR nivelamento (M112 - FIRMWARE_RESTART)")
+                    self._gui_msg = "Nivelamento abortado (M112)"
+                    self._gui_msg_until = now + 15.
+                    self._mesh_arm = 0.
+                    self._gui_run_action("M112")
+                else:
+                    # First tap only arms it - the abort stops the printer.
+                    self._mesh_arm = now + 5.
+                    self.gcode.respond_info("GUI: ABORTAR? toca outra vez")
+                    self._gui_msg = "Toca outra vez para ABORTAR (M112)"
+                    self._gui_msg_until = now + 6.
+                    self._gui_render(now)
                 return
         if self.gui_screen == 'network':
             for (x, y, w, h, idx, item) in self._gui_buttons():
