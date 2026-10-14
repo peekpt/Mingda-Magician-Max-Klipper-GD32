@@ -649,7 +649,7 @@ class ST7796:
     def _touch_event(self, eventtime):
         if self.gui and self._disp_quiet(eventtime):
             # Printer is homing/moving: keep the serial link completely clear.
-            return eventtime + 0.1
+            return eventtime + 0.06
         if self._gui_pending is not None:
             if eventtime >= self._gui_pending:
                 self._gui_pending = None
@@ -709,7 +709,7 @@ class ST7796:
                         and abs(self._yl - self._y0) < self.touch_swipe):
                     self._gui_tap((self._x0 + self._xl) // 2,
                                   (self._y0 + self._yl) // 2, eventtime)
-            return eventtime + 0.04
+            return eventtime + 0.03
         if z >= self.touch_threshold:
             if self.touch_debug:
                 self.gcode.respond_info("touch raw x=%d y=%d z=%d" % (x, y, z))
@@ -1082,9 +1082,10 @@ class ST7796:
                     except Exception:
                         msg = ''
             m = str(msg)[:56]
+            self._bot_max = max(getattr(self, '_bot_max', 0), len(m))
             self._gui_text_center(0, self.width, y + 9,
-                                  (' ' + m.center(58) + ' ')[:60], fg,
-                                  bg, 1)
+                                  (' ' + m.center(self._bot_max + 2) + ' ')
+                                  [:(self._bot_max + 4)], fg, bg, 1)
     def _gui_bars(self, eventtime):
         sampled = False
         now = self.printer.get_reactor().monotonic()
@@ -1135,14 +1136,14 @@ class ST7796:
         t0 = reactor.monotonic()
         while ops:
             ops.pop(0)()
-            if reactor.monotonic() - t0 >= 0.003:
+            if reactor.monotonic() - t0 >= 0.010:
                 break
         if ops:
             reactor.register_callback(self._gui_drain)
         else:
             self._gui_ops = None
         return reactor.NEVER
-    def _gui_defer(self, eventtime, delay=0.4):
+    def _gui_defer(self, eventtime, delay=0.2):
         t = eventtime + delay
         if self._gui_pending is None or t < self._gui_pending:
             self._gui_pending = t
@@ -1525,7 +1526,7 @@ class ST7796:
         reactor = self.printer.get_reactor()
         if any(t in script for t in self._MOVE_TOKENS):
             # Moving: stay off the wire for a moment after dispatching.
-            self._gui_grace_until = reactor.monotonic() + 6.
+            self._gui_grace_until = reactor.monotonic() + 2.5
         self._gui_action_active = True
         def _run(et, s=script):
             try:
