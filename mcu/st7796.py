@@ -1357,20 +1357,32 @@ class ST7796:
                 self._sign_btn(ops, bx, by, bw, bh,
                                "+" if what == 'plus' else "-",
                                self._gc(0 if what == 'plus' else 1))
-            else:
-                bg = COL_OK if what == 'save' else self.gui_btn_bg
-                if what == 'save':
-                    lab = "Save"
-                elif what == 'ok':
-                    lab = "OK"
-                else:
-                    lab = "%g" % self._popup_step
+            elif what == 'step':
+                bg = self.gui_btn_bg
                 ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, bg=bg:
                            self._gui_round(bx, by, bw, bh, bg))
-                ops.append(lambda bx=bx, bw=bw, by=by, bh=bh, lab=lab, bg=bg:
+                ops.append(lambda bx=bx, bw=bw, by=by, bh=bh, bg=bg:
                            self._gui_text_center(
-                               bx, bw, by + (bh - 16) // 2, lab, COL_WHITE,
-                               bg, 1))
+                               bx, bw, by + (bh - 16) // 2,
+                               "%g" % self._popup_step, COL_WHITE, bg, 1))
+            else:
+                # OK -> check mark (with a green line), Save -> floppy disk
+                if what == 'save':
+                    icon, bg, acc = 'save', COL_OK, None
+                else:
+                    icon, bg, acc = 'check', self.gui_btn_bg, COL_OK
+                isz = 30
+                iw = (self._icon_at(icon, isz) or (0, 0))[0]
+                ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, bg=bg:
+                           self._gui_round(bx, by, bw, bh, bg))
+                ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, icon=icon,
+                           bg=bg, isz=isz, iw=iw: self._gui_icon_at(
+                               icon, bx + (bw - iw) // 2,
+                               by + (bh - isz) // 2, COL_WHITE, bg, isz))
+                if acc is not None:
+                    ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, acc=acc:
+                               self.cmd_rect.send([bx + 10, by + bh - 11,
+                                                   bw - 20, 5, acc]))
 
     def _popup_open(self, key, eventtime):
         it = POPUP_ITEMS.get(key)
