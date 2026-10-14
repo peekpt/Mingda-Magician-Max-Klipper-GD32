@@ -664,9 +664,10 @@ class ST7796:
         return self.menu
     def _touch_event(self, eventtime):
         if self.gui and self._disp_quiet(eventtime):
-            # Printer is homing/moving: stay off the link, but keep a tiny
+            # Printer is homing/moving: stay off the link. During homing/probing
+            # stay completely silent (trsync timing), otherwise send a tiny
             # heartbeat (clock + hourglass) so the screen doesn't look frozen.
-            if eventtime >= self._gui_beat:
+            if not self._homing and eventtime >= self._gui_beat:
                 self._gui_beat = eventtime + 1.0
                 try:
                     self._gui_clock(eventtime)
