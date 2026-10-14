@@ -130,6 +130,9 @@ GUI_STRIP = {
              ('10', 10.0), ('25', 25.0), ('50', 50.0)],
 }
 
+# Screens whose button grid is not the default 4 columns x 2 rows
+GUI_ROWS = {'print': 3}
+
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
 ICON = 0x100
 
@@ -280,6 +283,7 @@ class ST7796:
         self._net_t = 0.
         self._ptune = 'flow'
         self._card_cols = {}
+        self._fil_unloaded = False
         self._corners = (_make_corner(self.gui_radius, False, False),
                          _make_corner(self.gui_radius, True, False),
                          _make_corner(self.gui_radius, False, True),
@@ -943,7 +947,7 @@ class ST7796:
             return []
         return GUI_SCREENS.get(self.gui_screen, [])
     def _gui_buttons(self):
-        cols, rows = 4, 2
+        cols, rows = 4, GUI_ROWS.get(self.gui_screen, 2)
         x0, y0 = self.RAIL_W, self.TOP_H
         x1, y1 = self.width, self.height - self.STRIP_H
         bw = (x1 - x0) // cols
@@ -1240,10 +1244,10 @@ class ST7796:
         ps = self._print_status(eventtime)
         return ps is not None and ps['state'] in ('printing', 'paused')
     def _print_btns(self):
-        # The four grid slots on the right hand side (2x2), as (x,y,w,h,idx).
+        # The four/six grid slots on the right hand side, as (x,y,w,h,idx).
         out = []
         for (x, y, w, h, idx, item) in self._gui_buttons():
-            if idx in (2, 3, 6, 7):
+            if idx in (2, 3, 6, 7, 10, 11):
                 out.append((x, y, w, h, idx))
         return out
     def _graph_ops(self, ops, gx, gy, gw, gh, series, tgt, color, label, cur):
@@ -1399,7 +1403,7 @@ class ST7796:
             if idx == 2:
                 self._btn_ops(ops, x, y, w, h,
                               'play48' if paused else 'pause48',
-                              "Retomar" if paused else "Pausa", accent=acc)
+                              "Continuar" if paused else "Pausa", accent=acc)
             elif idx == 3:
                 self._btn_ops(ops, x, y, w, h, 'x48', "Parar", COL_ERR,
                               accent=acc)
@@ -1408,6 +1412,13 @@ class ST7796:
                               accent=acc)
             elif idx == 7:
                 self._btn_ops(ops, x, y, w, h, 'thermo', "Temps", accent=acc)
+            elif idx == 10:
+                if self._fil_unloaded:
+                    self._btn_ops(ops, x, y, w, h, 'load', "Introduzir",
+                                  accent=acc)
+                else:
+                    self._btn_ops(ops, x, y, w, h, 'unload', "Trocar fil.",
+                                  accent=acc)
     def _gui_render(self, eventtime):
         if self._disp_quiet(eventtime) or self._gui_ops:
             self._gui_defer(eventtime)
@@ -1674,15 +1685,26 @@ class ST7796:
         g = self.gui_btn_gap
         i2 = g // 2
         bx, by, bw2, bh2 = x + i2, y + i2, w - g, h - g
+        sz = 0
         sc = self._scaled_icon(icon)
         iw, ih = (sc[0], sc[1]) if sc else (0, 0)
+        if ih + 42 > bh2:                     # short button: shrink the icon
+            sz = max(16, bh2 - 42)
+            iw = ih = sz
         iy = by + max(4, (bh2 - (ih + 8 + 16)) // 2)
         ty = iy + ih + 8
         ops.append(lambda bx=bx, by=by, bw2=bw2, bh2=bh2:
                    self._gui_round(bx, by, bw2, bh2, self.gui_btn_bg))
-        ops.append(lambda bx=bx, bw2=bw2, iy=iy, icon=icon, iw=iw, col=col:
-                   self._gui_icon(icon, bx + (bw2 - iw) // 2, iy, col,
-                                  self.gui_btn_bg))
+        if sz:
+            ops.append(lambda bx=bx, bw2=bw2, iy=iy, icon=icon, iw=iw,
+                       col=col, sz=sz: self._gui_icon_at(
+                           icon, bx + (bw2 - iw) // 2, iy, col,
+                           self.gui_btn_bg, sz))
+        else:
+            ops.append(lambda bx=bx, bw2=bw2, iy=iy, icon=icon, iw=iw,
+                       col=col: self._gui_icon(
+                           icon, bx + (bw2 - iw) // 2, iy, col,
+                           self.gui_btn_bg))
         ops.append(lambda bx=bx, bw2=bw2, ty=ty, label=label:
                    self._gui_text_center(bx, bw2, ty, label, COL_WHITE,
                                          self.gui_btn_bg, 1))
@@ -1828,6 +1850,28 @@ class ST7796:
             i = self._ext_steps.index(self._ext_step)
             self._ext_step = self._ext_steps[(i + 1) % len(self._ext_steps)]
             self._gui_render(eventtime)
+        elif isinstance(action, tuple) and action[0] == 'fil':
+            try:
+                st = self.printer.lookup_object('print_stats').get_status(
+                    eventtime)['state']
+            except Exception:
+                st = 'ready'
+            if not self._fil_unloaded:
+                # Remove the filament: pause first if a print is running.
+                self._fil_unloaded = True
+                self._gui_msg = "A retirar o filamento..."
+                script = ('PAUSE\n' if st == 'printing' else '')
+                script += 'UNLOAD_FILAMENT'
+            else:
+                self._fil_unloaded = False
+                self._gui_msg = "A introduzir o filamento (~100mm)..."
+                script = 'LOAD_FILAMENT'
+            try:
+                self._gui_msg_until = (
+                    self.printer.get_reactor().monotonic() + 20.)
+            except Exception:
+                pass
+            self._gui_defer(eventtime, 1.0)
         elif isinstance(action, tuple) and action[0] == 'estop':
             if action[1] == 'yes':
                 self.gcode.respond_info("GUI: EMERGENCY STOP (M112)")
@@ -2003,6 +2047,9 @@ class ST7796:
                         elif idx == 7:
                             self.gcode.respond_info("GUI: Temperaturas")
                             self._gui_do(('scr', 'ptemp'), eventtime)
+                        elif idx == 10:
+                            self.gcode.respond_info("GUI: Filamento")
+                            self._gui_do(('fil',), eventtime)
                         return
             else:
                 for (bx, by, bw, bh, kind) in self._list_btns():
