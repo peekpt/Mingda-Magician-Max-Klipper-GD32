@@ -354,6 +354,11 @@ class ST7796:
         self._popup_save = False
         self._popup_applied = 0.
         self._baby_base = 0.
+        # Baby step persisted outside printer.cfg: saved to a small file and
+        # re-applied at the start of every print (no SAVE_CONFIG restart).
+        self._baby_saved = 0.
+        self._baby_file = os.path.expanduser(
+            '~/printer_data/config/baby_z.txt')
         self._corners = (_make_corner(self.gui_radius, False, False),
                          _make_corner(self.gui_radius, True, False),
                          _make_corner(self.gui_radius, False, True),
@@ -790,9 +795,11 @@ class ST7796:
         if st != self._last_ps_state:
             self._last_ps_state = st
             if st in ('printing', 'paused'):
-                # A print just started: jump to the printing screen.
+                # A print just started: jump to the printing screen and apply
+                # the saved baby step.
                 self.gui_screen = 'print'
                 self._gui_defer(eventtime, 0.05)
+                self._baby_apply_saved()
         if eventtime >= self._gui_next:
             self._gui_next = eventtime + 0.5
             self._gui_bars(eventtime)
@@ -1230,6 +1237,32 @@ class ST7796:
                        COL_WHITE, self.gui_bar_bg, 1)
         self._draw_hourglass(True)
     # --- inline adjustment panel (drawn where the info tiles are) --------
+    def _baby_load(self):
+        try:
+            with open(self._baby_file) as f:
+                self._baby_saved = float(f.read().strip() or 0.)
+        except Exception:
+            self._baby_saved = 0.
+        return self._baby_saved
+
+    def _baby_store(self, val):
+        try:
+            with open(self._baby_file, 'w') as f:
+                f.write("%.4f\n" % val)
+            self._baby_saved = val
+            return True
+        except Exception:
+            logging.exception("st7796: could not save baby step")
+            return False
+
+    def _baby_apply_saved(self):
+        if abs(self._baby_saved) < 0.0005:
+            return
+        script = "SET_GCODE_OFFSET Z=%.4f" % self._baby_saved
+        self.gcode.respond_info("GUI: aplicar baby step guardado (%s)"
+                                % script)
+        self._gui_run_action(script)
+
     def _popup_state(self):
         return POPUP_ITEMS.get(self._popup)
 
@@ -1316,9 +1349,9 @@ class ST7796:
                                                   self._popup_fmt(val),
                                                   COL_C1, COL_BG, 3))
         if it.get('live'):
-            ops.append(lambda: self._gui_text(x0 + 74, y0 + 92,
-                                              "(live no trabalho atual)",
-                                              COL_DIM, COL_BG, 1))
+            ops.append(lambda: self._gui_text(
+                x0 + 74, y0 + 92, "(live - guardado %+.3f)"
+                % self._baby_saved, COL_DIM, COL_BG, 1))
         for (bx, by, bw, bh, what) in self._popup_btns():
             if what in ('minus', 'plus'):
                 self._sign_btn(ops, bx, by, bw, bh,
@@ -1418,11 +1451,16 @@ class ST7796:
                 self._popup_close(eventtime)
                 return True
             if what == 'save':
-                self.gcode.respond_info("GUI: gravar o baby step na probe")
-                self._gui_msg = "A gravar o baby step (SAVE_CONFIG)..."
+                total = self._baby_saved + self._popup_applied
+                ok = self._baby_store(total)
+                self._popup_applied = 0.
+                self.gcode.respond_info(
+                    "GUI: baby step guardado %+.3f (%s) - aplica-se no inicio de"
+                    " cada impressao" % (total,
+                                         "ok" if ok else "ERRO a gravar"))
+                self._gui_msg = "Baby step guardado %+.3f" % total
                 self._gui_msg_until = (
-                    self.printer.get_reactor().monotonic() + 20.)
-                self._gui_run_action('Z_OFFSET_APPLY_PROBE\nSAVE_CONFIG')
+                    self.printer.get_reactor().monotonic() + 6.)
                 self._popup_close(eventtime)
                 return True
         return False
@@ -1559,6 +1597,9 @@ class ST7796:
                      self._homing)
     def _on_connect(self):
         self._homing = 0
+        self._baby_load()
+        if self._baby_saved:
+            logging.info("st7796: baby step guardado %+.3f", self._baby_saved)
     def _disp_quiet(self, eventtime):
         # True => do not talk to the MCU at all (no touch poll, no redraw). While
         # the printer runs short-buffered motion (homing / probing / manual move)
@@ -1605,7 +1646,7 @@ class ST7796:
                        self._gui_text(rx + 12, ry + 2, name[:44], COL_WHITE,
                                       bg, 1))
         for (bx, by, bw, bh, kind) in self._list_btns():
-            isz = 44
+            isz = 34                    # smaller icon, centred in the square
             ops.append(lambda bx=bx, by=by, bw=bw, bh=bh:
                        self._gui_round(bx, by, bw, bh, self.gui_btn_bg))
             ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, kind=kind, isz=isz:
