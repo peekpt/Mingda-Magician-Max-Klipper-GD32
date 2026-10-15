@@ -1497,8 +1497,8 @@ class ST7796:
             ico = self._icon_at(icon, 22)
             ops.append(lambda tx=tx, ty=ty: self.cmd_rect.send(
                 [tx, ty, 104, 24, COL_BG]))
-            ops.append(lambda i=ico, tx=tx, ty=ty, c=col: self._draw_bmp(
-                i, tx, ty, c, COL_BG, ('mticon', icon, 22)))
+            ops.append(lambda i=ico, tx=tx, ty=ty, c=col, ic=icon:
+                       self._draw_bmp(i, tx, ty, c, COL_BG, ('mticon', ic, 22)))
             ops.append(lambda tx=tx, ty=ty, c=col, s=lbl: self._gui_text(
                 tx + 30, ty + 3, s, c, COL_BG, 1))
         self._mesh_ltv = tv
