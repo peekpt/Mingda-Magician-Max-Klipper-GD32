@@ -212,6 +212,13 @@ def _dot_fn(i, j, n):
     return dx * dx + dy * dy <= (c + 0.35) ** 2
 
 
+def _ring_fn(i, j, n):
+    c = (n - 1) / 2.0
+    dx, dy = i - c, j - c
+    r2 = dx * dx + dy * dy
+    return (c - 1.7) ** 2 <= r2 <= (c + 0.35) ** 2
+
+
 def _hourglass_fn(i, j, n):
     # Simple hourglass: solid shape that narrows towards the middle.
     m = 0.12 * n
@@ -234,6 +241,8 @@ EXTRA_ICONS = {
     'dot10': _mk_bmp(10, _dot_fn),
     'dot12': _mk_bmp(12, _dot_fn),
     'dot22': _mk_bmp(22, _dot_fn),
+    'dot16': _mk_bmp(16, _dot_fn),
+    'ring16': _mk_bmp(16, _ring_fn),
     'dot18': _mk_bmp(18, _dot_fn),
     'dot30': _mk_bmp(30, _dot_fn),
 }
@@ -312,6 +321,10 @@ class ST7796:
         self._mesh_arm = 0.
         self._mesh_run = 0
         self._mesh_t = 0.
+        self._mesh_lmk = 0x7FFFFFFF     # state currently drawn on the panel
+        self._mesh_ldone = 0x7FFFFFFF
+        self._mesh_ltv = None
+        self._mesh_lbr = None
         self._mesh_hook()
         # Touch (XPT2046)
         self.gcode = gcode
@@ -783,11 +796,11 @@ class ST7796:
                 # Leveling: keep the screen alive - temperatures while heating,
                 # the map while travelling between probe points. Never during a
                 # probe move (_homing): that is when trsync timing is critical.
-                self._gui_beat = eventtime + 0.4
+                self._gui_beat = eventtime + 0.3
                 try:
-                    self._gui_render(eventtime)
+                    self._mesh_update(eventtime)
                 except Exception:
-                    logging.exception("st7796: leveling redraw failed")
+                    logging.exception("st7796: mesh update failed")
                 return eventtime + 0.1
             if not self._homing and eventtime >= self._gui_beat:
                 self._gui_beat = eventtime + 1.0
@@ -843,11 +856,15 @@ class ST7796:
         if eventtime >= self._gui_next:
             self._gui_next = eventtime + 0.5
             self._gui_bars(eventtime)
-        if (self.gui_screen == 'mesh' and not self._gui_ops
+        if (self.gui and self.gui_screen == 'mesh' and not self._gui_ops
                 and eventtime >= self._mesh_t):
-            # leveling screen: refresh the temperatures / the probe map
-            self._mesh_t = eventtime + (0.4 if self._mesh_active else 1.0)
-            self._gui_pending = eventtime
+            # Leveling screen: only redraw what changed (temperatures / probe
+            # map) - a full repaint every second flickers.
+            self._mesh_t = eventtime + (0.3 if self._mesh_run > 0 else 1.0)
+            try:
+                self._mesh_update(eventtime)
+            except Exception:
+                logging.exception("st7796: mesh update failed")
     def _touch_sample(self, x, y, z, eventtime):
         if self.touch_debug:
             self._dbg_i = (getattr(self, '_dbg_i', 0) + 1) % 4
@@ -950,6 +967,8 @@ class ST7796:
     TOP_H = 30
     RAIL_W = 36
     STRIP_H = 34
+    MESH_X0 = RAIL_W + 14
+    MESH_Y0 = TOP_H + 16
     def _gc(self, i):
         return GUI_COLORS[i % len(GUI_COLORS)]
     def _gui_text(self, x, y, text, fg, bg, scale=1):
@@ -1326,6 +1345,10 @@ class ST7796:
         self._mesh_run += 1
         try:
             self._mesh_notice()
+            self._mesh_forget()
+            mn, mx, cx, cy = self._mesh_geo()
+            logging.info("st7796: nivelamento %dx%d de %s a %s",
+                         cx, cy, tuple(mn), tuple(mx))
             if self.gui:
                 self.gui_screen = 'mesh'
                 self._gui_render(reactor.monotonic())
@@ -1350,6 +1373,10 @@ class ST7796:
         self._mesh_run += 1
         self._mesh_done = -1
         self._mesh_arm = 0.
+        self._mesh_forget()
+        mn, mx, cx, cy = self._mesh_geo()
+        logging.info("st7796: nivelamento %dx%d de %s a %s",
+                     cx, cy, tuple(mn), tuple(mx))
         try:
             self._mesh_notice(240.)
         except Exception:
@@ -1367,17 +1394,16 @@ class ST7796:
                 self._gui_defer(reactor.monotonic(), 0.3)
 
     def _mesh_geo(self):
-        # (mesh_min, mesh_max, cols, rows) of the configured bed mesh.
+        # (mesh_min, mesh_max, cols, rows) of the configured bed mesh. The
+        # bed_mesh status only reports mesh_min/mesh_max once a mesh is loaded
+        # (it returns 0,0 before that), so always take them from the config -
+        # those are the tool coordinates the probe will actually visit.
         mn, mx, cx, cy = (0., 0.), (300., 300.), 4, 4
-        try:
-            st = self.printer.lookup_object('bed_mesh').get_status(0)
-            mn = tuple(st.get('mesh_min', mn))
-            mx = tuple(st.get('mesh_max', mx))
-        except Exception:
-            pass
         try:
             cfg = self.printer.lookup_object('configfile').get_status(0)[
                 'settings'].get('bed_mesh', {})
+            mn = tuple(float(v) for v in cfg.get('mesh_min', mn))
+            mx = tuple(float(v) for v in cfg.get('mesh_max', mx))
             pc = cfg.get('probe_count', (4, 4))
             cx, cy = max(2, int(pc[0])), max(2, int(pc[1]))
         except Exception:
@@ -1389,91 +1415,103 @@ class ST7796:
             st = self.printer.lookup_object('toolhead').get_status(eventtime)
             pos = st['position']
         except Exception:
-            return 0., 0.
+            return None
         return float(pos[0]), float(pos[1])
 
     def _mesh_pts(self, mn, mx, cx, cy):
         # [(screen_x, screen_y, probe index, col, row)] - the probe order is
         # serpentine, the on-screen layout is the plain grid.
-        x0, y0 = self.RAIL_W + 14, self.TOP_H + 16
-        gw, gh = 196, 196
+        x0, y0 = self.MESH_X0, self.MESH_Y0
+        span = 60 * (max(cx, cy) - 1) + 16
         out = []
         for j in range(cy):
             for m in range(cx):
                 i = m if j % 2 == 0 else cx - 1 - m
-                sx = x0 + int(i * (gw - 16) / (cx - 1))
-                sy = y0 + int((cy - 1 - j) * (gh - 16) / (cy - 1))
+                sx = x0 + int(i * (span - 16) / (cx - 1))
+                sy = y0 + int((cy - 1 - j) * (span - 16) / (cy - 1))
                 out.append((sx, sy, j * cx + m, i, j))
         return out
 
-    def _mesh_view_ops(self, ops, eventtime):
-        mn, mx, cx, cy = self._mesh_geo()
-        pts = self._mesh_pts(mn, mx, cx, cy)
-        hx, hy = self._mesh_cur(eventtime)
+    def _mesh_marker(self, pts, mn, mx, cx, cy, eventtime):
+        # index of the point the head is closest to (-1 when not probing)
+        if not self._mesh_active:
+            return -1
+        pos = self._mesh_cur(eventtime)
+        if pos is None:
+            return -1
+        hx, hy = pos
         best = None
         for (sx, sy, idx, i, j) in pts:
             px = mn[0] + (mx[0] - mn[0]) * i / max(1, cx - 1)
             py = mn[1] + (mx[1] - mn[1]) * j / max(1, cy - 1)
             d = (px - hx) ** 2 + (py - hy) ** 2
             if best is None or d < best[0]:
-                best = (d, idx, sx, sy)
-        if self._mesh_active and best is not None and best[1] > self._mesh_done:
-            self._mesh_done = best[1]
-        cols = sorted({p[0] for p in pts})
-        rows = sorted({p[1] for p in pts})
-        # the grid: one thin line per row/column, crossing at the probe points
-        for gx in cols:
-            ops.append(lambda gx=gx, a=rows[0], b=rows[-1]: self.cmd_rect.send(
-                [gx, a, 1, b - a + 1, COL_DIM]))
-        for gy in rows:
-            ops.append(lambda gy=gy, a=cols[0], b=cols[-1]: self.cmd_rect.send(
-                [a, gy, b - a + 1, 1, COL_DIM]))
-        dot = EXTRA_ICONS['dot10']
-        ring = EXTRA_ICONS['dot30']
-        core = EXTRA_ICONS['dot22']
-        for (sx, sy, idx, i, j) in pts:
-            if self._mesh_active and best is not None and idx == best[1]:
-                # point being probed: big red dot with a thin white ring
-                ops.append(lambda sx=sx, sy=sy, d=ring: self._bmp_at(
-                    d, sx - 15, sy - 15, COL_WHITE, COL_BG, ('dot30', 0)))
-                ops.append(lambda sx=sx, sy=sy, d=core: self._bmp_at(
-                    d, sx - 11, sy - 11, COL_ERR, COL_BG, ('dot22', 0)))
-            else:
-                col = COL_ERR if idx <= self._mesh_done else COL_ACTIVE
-                ops.append(lambda sx=sx, sy=sy, c=col, d=dot: self._bmp_at(
-                    d, sx - 5, sy - 5, c, COL_BG, ('dot10', 0)))
-        ops.append(lambda: self._gui_text(
-            self.RAIL_W + 16, rows[-1] + 24,
-            "Ponto %d / %d" % (self._mesh_done + 1, len(pts)),
-            COL_WHITE, COL_BG, 1))
-        # --- right column: warning, temperatures, buttons ------------------
-        cx0, cw = self.width - 224, 216
-        ops.append(lambda: self._gui_text_center(
-            cx0, cw, self.TOP_H + 12, "VERIFICAR SE O BICO", COL_WARN,
-            COL_BG, 1))
-        ops.append(lambda: self._gui_text_center(
-            cx0, cw, self.TOP_H + 30, "ESTA SUJO (LIMPAR ANTES)", COL_WARN,
-            COL_BG, 1))
+                best = (d, idx)
+        return best[1] if best else -1
+
+    def _mesh_point_ops(self, ops, sx, sy, idx, mk, done):
+        # clear the cell first (the marker is bigger than a dot)
+        ops.append(lambda sx=sx, sy=sy: self.cmd_rect.send(
+            [sx - 13, sy - 13, 26, 26, COL_BG]))
+        if idx == mk:
+            # point being probed: white circle with a black square in it
+            ops.append(lambda sx=sx, sy=sy: self._bmp_at(
+                EXTRA_ICONS['dot22'], sx - 11, sy - 11, COL_WHITE, COL_BG,
+                ('dot22', 0)))
+            ops.append(lambda sx=sx, sy=sy: self.cmd_rect.send(
+                [sx - 5, sy - 5, 10, 10, 0x0000]))
+        elif idx <= done:
+            ops.append(lambda sx=sx, sy=sy: self._bmp_at(
+                EXTRA_ICONS['dot16'], sx - 8, sy - 8, COL_ERR, COL_BG,
+                ('dot16', 0)))
+        else:
+            ops.append(lambda sx=sx, sy=sy: self._bmp_at(
+                EXTRA_ICONS['ring16'], sx - 8, sy - 8, COL_ACTIVE, COL_BG,
+                ('ring16', 0)))
+
+    def _mesh_progress_ops(self, ops, done, total):
+        y = self.MESH_Y0 + 60 * 3 + 24
+        ops.append(lambda y=y: self.cmd_rect.send(
+            [self.RAIL_W + 16, y, 168, 16, COL_BG]))
+        lab = "Ponto %d / %d" % (done + 1, total)
+        ops.append(lambda y=y, lab=lab: self._gui_text(
+            self.RAIL_W + 16, y, lab, COL_WHITE, COL_BG, 1))
+
+    def _mesh_temp_state(self, eventtime):
         try:
             ex = self.printer.lookup_object('extruder').get_status(eventtime)
             bd = self.printer.lookup_object('heater_bed').get_status(eventtime)
         except Exception:
-            ex = bd = None
+            return None
+        return tuple(("%d/%d" % (st['temperature'], st['target']),
+                      self._temp_color(st['temperature'], st['target']))
+                     for st in (ex, bd))
+
+    def _mesh_temp_ops(self, ops, eventtime):
+        tv = self._mesh_temp_state(eventtime)
+        if tv is None:
+            return
         tx = self.width - 202
-        if ex is not None:
-            for k, (icon, stt) in enumerate((('nozzle', ex), ('bed', bd))):
-                ty = self.TOP_H + 58 + k * 44
-                ico = self._icon_at(icon, 22)
-                col = self._temp_color(stt['temperature'], stt['target'])
-                lbl = "%d/%d" % (stt['temperature'], stt['target'])
-                ops.append(lambda i=ico, tx=tx, ty=ty, c=col:
-                           self._draw_bmp(i, tx, ty, c, COL_BG,
-                                          ('mticon', icon, 22)))
-                ops.append(lambda tx=tx, ty=ty, c=col, s=lbl:
-                           self._gui_text(tx + 30, ty + 3, s, c, COL_BG, 1))
-        # --- buttons: start (disabled while leveling) / cancel-abort -------
-        armed = eventtime < self._mesh_arm
+        for k, (icon, (lbl, col)) in enumerate(zip(('nozzle', 'bed'), tv)):
+            ty = self.TOP_H + 58 + k * 44
+            ico = self._icon_at(icon, 22)
+            ops.append(lambda tx=tx, ty=ty: self.cmd_rect.send(
+                [tx, ty, 104, 24, COL_BG]))
+            ops.append(lambda i=ico, tx=tx, ty=ty, c=col: self._draw_bmp(
+                i, tx, ty, c, COL_BG, ('mticon', icon, 22)))
+            ops.append(lambda tx=tx, ty=ty, c=col, s=lbl: self._gui_text(
+                tx + 30, ty + 3, s, c, COL_BG, 1))
+        self._mesh_ltv = tv
+
+    def _mesh_btns(self):
+        bw, bh = 104, 88
+        y = self.TOP_H + 128
+        x0 = self.width - 2 * bw - 20
+        return [(x0, y, bw, bh, 'start'), (x0 + bw + 12, y, bw, bh, 'cancel')]
+
+    def _mesh_btn_ops(self, ops, eventtime):
         running = self._mesh_run > 0
+        armed = running and eventtime < self._mesh_arm
         for (x, y, w, h, kind) in self._mesh_btns():
             if kind == 'start':
                 icon = 'play48'
@@ -1495,12 +1533,74 @@ class ST7796:
                                          fg, bg, 44))
             ops.append(lambda x=x, y=y, w=w, h=h, lab=lab, fg=fg, bg=bg:
                        self._gui_text_center(x, w, y + h - 26, lab, fg, bg, 1))
+        self._mesh_lbr = (running, armed)
 
-    def _mesh_btns(self):
-        bw, bh = 104, 88
-        y = self.TOP_H + 128
-        x0 = self.width - 2 * bw - 20
-        return [(x0, y, bw, bh, 'start'), (x0 + bw + 12, y, bw, bh, 'cancel')]
+    def _mesh_view_ops(self, ops, eventtime):
+        # Full draw of the leveling screen.
+        mn, mx, cx, cy = self._mesh_geo()
+        pts = self._mesh_pts(mn, mx, cx, cy)
+        mk = self._mesh_marker(pts, mn, mx, cx, cy, eventtime)
+        if mk > self._mesh_done:
+            self._mesh_done = mk
+        done = self._mesh_done
+        ops.append(lambda: self._gui_text_center(
+            self.width - 224, 216, self.TOP_H + 12, "VERIFICAR SE O BICO",
+            COL_WARN, COL_BG, 1))
+        ops.append(lambda: self._gui_text_center(
+            self.width - 224, 216, self.TOP_H + 30, "ESTA SUJO (LIMPAR ANTES)",
+            COL_WARN, COL_BG, 1))
+        for (sx, sy, idx, i, j) in pts:
+            self._mesh_point_ops(ops, sx, sy, idx, mk, done)
+        self._mesh_progress_ops(ops, done, len(pts))
+        self._mesh_temp_ops(ops, eventtime)
+        self._mesh_btn_ops(ops, eventtime)
+        self._mesh_lmk, self._mesh_ldone = mk, done
+
+    def _mesh_forget(self):
+        # The last redraw was dropped halfway: next update redraws everything.
+        self._mesh_lmk = 0x7FFFFFFF
+        self._mesh_ldone = 0x7FFFFFFF
+        self._mesh_ltv = None
+        self._mesh_lbr = None
+
+    def _mesh_update(self, eventtime):
+        # Incremental redraw: only the points/temps that actually changed, so
+        # the panel does not flicker while leveling.
+        mn, mx, cx, cy = self._mesh_geo()
+        pts = self._mesh_pts(mn, mx, cx, cy)
+        mk = self._mesh_marker(pts, mn, mx, cx, cy, eventtime)
+        done = self._mesh_done
+        if mk > done:
+            done = mk
+        ops = []
+        lmk, ldone = self._mesh_lmk, self._mesh_ldone
+        changed = set()
+        if lmk != mk:
+            if 0 <= lmk:
+                changed.add(lmk)
+            if 0 <= mk:
+                changed.add(mk)
+        if done > ldone:
+            for k in range(max(0, ldone + 1), done + 1):
+                changed.add(k)
+        elif done < ldone:
+            for k in range(max(0, done + 1), ldone + 1):
+                changed.add(k)
+        for (sx, sy, idx, i, j) in pts:
+            if idx in changed:
+                self._mesh_point_ops(ops, sx, sy, idx, mk, done)
+        if done != ldone:
+            self._mesh_progress_ops(ops, done, len(pts))
+        tv = self._mesh_temp_state(eventtime)
+        if tv is not None and tv != self._mesh_ltv:
+            self._mesh_temp_ops(ops, eventtime)
+        running = self._mesh_run > 0
+        if (running, running and eventtime < self._mesh_arm) != self._mesh_lbr:
+            self._mesh_btn_ops(ops, eventtime)
+        self._mesh_done = done
+        self._mesh_lmk, self._mesh_ldone = mk, done
+        if ops:
+            self._gui_enqueue(ops)
 
     # --- inline adjustment panel (drawn where the info tiles are) --------
     def _baby_load(self):
@@ -1839,6 +1939,7 @@ class ST7796:
         if self._disp_quiet(eventtime) and not self._mesh_can_draw():
             # Homing/moving started mid-redraw: drop it and redraw when idle.
             self._gui_ops = None
+            self._mesh_forget()
             self._gui_defer(eventtime, 0.4)
             return reactor.NEVER
         t0 = reactor.monotonic()
@@ -1857,6 +1958,7 @@ class ST7796:
                     and self._homing:
                 # a probe move just started: stop the map update instantly
                 self._gui_ops = None
+                self._mesh_forget()
                 return reactor.NEVER
         if ops:
             reactor.register_callback(self._gui_drain)
@@ -2619,6 +2721,7 @@ class ST7796:
             if action[1] == 'mesh':
                 self._mesh_done = -1
                 self._mesh_arm = 0.
+                self._mesh_forget()
             self._gui_render(eventtime)
         elif isinstance(action, tuple) and action[0] == 'step':
             i = self._gui_steps.index(self._gui_step)
