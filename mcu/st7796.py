@@ -280,6 +280,36 @@ def _ring_fn(i, j, n):
     return (c - 1.7) ** 2 <= r2 <= (c + 0.35) ** 2
 
 
+def _bedslinger_fn(i, j, n):
+    # Cartesian bed slinger seen from the front: a gantry with the tool head
+    # and the bed plate sticking out of the frame below it (the bed is the
+    # part that moves in Y - a CoreXY icon looks like a closed cube).
+    u = i / (n - 1.0)
+    v = j / (n - 1.0)
+    # top gantry beam
+    if 0.03 <= v <= 0.13 and 0.02 <= u <= 0.98:
+        return True
+    # uprights
+    if 0.13 <= v <= 0.60 and (0.02 <= u <= 0.11 or 0.89 <= u <= 0.98):
+        return True
+    # tool head hanging from the gantry
+    if 0.13 <= v <= 0.30 and 0.40 <= u <= 0.60:
+        return True
+    # nozzle tip (the gap under it is what makes it read as a printer)
+    if 0.30 <= v <= 0.42 and 0.46 <= u <= 0.54:
+        return True
+    # moving bed plate - wider than the frame
+    if 0.60 <= v <= 0.69 and 0.00 <= u <= 1.00:
+        return True
+    # bed carriage
+    if 0.69 <= v <= 0.77 and 0.28 <= u <= 0.72:
+        return True
+    # base / bed rails
+    if 0.77 <= v <= 0.84 and 0.10 <= u <= 0.90:
+        return True
+    return False
+
+
 def _hourglass_fn(i, j, n):
     # Simple hourglass: solid shape that narrows towards the middle.
     m = 0.12 * n
@@ -295,6 +325,9 @@ def _hourglass_fn(i, j, n):
 
 # Icons we generate locally (not part of the MDI set).
 EXTRA_ICONS = {
+    # Our printer is a bed slinger, not a CoreXY cube: replace the MDI
+    # 'print' icon everywhere it is used (menus + boot splash).
+    'print': _mk_bmp(64, _bedslinger_fn),
     'pause48': _mk_bmp(48, _pause_fn),
     'play48': _mk_bmp(48, _play_fn),
     'x48': _mk_bmp(48, _x_fn),
