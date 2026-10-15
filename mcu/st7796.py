@@ -14,7 +14,6 @@ import subprocess
 import threading
 import time
 import urllib.request
-from . import gui_i18n
 from . import tft_icons
 from . import tft_thumb
 
@@ -52,13 +51,13 @@ GUI_COLORS = (COL_C1,   # orange   #ED6500
 # ('mv', axis, sign), or None.
 GUI_SCREENS = {
     'main': [
-        ("Mover", "move", ('scr', 'move')),
-        ("Temperatura", "heatup", ('scr', 'temperature')),
+        ("Move", "move", ('scr', 'move')),
+        ("Temperature", "heatup", ('scr', 'temperature')),
         ("Extruder", "extrude", ('scr', 'extrude')),
-        ("Imprimir", "print", ('scr', 'print')),
-        ("Nivelar", "bedmesh", ('scr', 'mesh')),
-        ("Z Calibrar", "zoffset", ('scr', 'probe')),
-        ("Mais", "settings", ('scr', 'more')),
+        ("Print", "print", ('scr', 'print')),
+        ("Level", "bedmesh", ('scr', 'mesh')),
+        ("Z Calibrate", "zoffset", ('scr', 'probe')),
+        ("More", "settings", ('scr', 'more')),
         ("Home", "home", 'G28'),
     ],
     'move': [
@@ -76,25 +75,25 @@ GUI_SCREENS = {
         ("PETG", "heatup", 'PREHEAT_PETG'),
         ("ABS", "heatup", 'PREHEAT_ABS'),
         ("TPU", "heatup", 'PREHEAT_TPU'),
-        ("Arrefecer", "cool", 'M104 S0\nM140 S0'),
-        ("Bico 200", "fire", 'M104 S200'),
-        ("Cama 60", "bed", 'M140 S60'),
-        ("Voltar", "back", ('scr', 'main')),
+        ("Cool", "cool", 'M104 S0\nM140 S0'),
+        ("Nozzle 200", "fire", 'M104 S200'),
+        ("Bed 60", "bed", 'M140 S60'),
+        ("Back", "back", ('scr', 'main')),
     ],
     'extrude': [
-        ("Carregar", "load", 'LOAD_FILAMENT'),
-        ("Descarga", "unload", 'UNLOAD_FILAMENT'),
+        ("Load", "load", 'LOAD_FILAMENT'),
+        ("Unload", "unload", 'UNLOAD_FILAMENT'),
         ("E +", "edown", ('ex', 1)),
         ("E -", "eup", ('ex', -1)),
-        ("Bico 200", "fire", 'M104 S200'),
-        ("Bico 240", "fire", 'M104 S240'),
+        ("Nozzle 200", "fire", 'M104 S200'),
+        ("Nozzle 240", "fire", 'M104 S240'),
         ("E 1mm", "extrude", ('ext',)),
-        ("Mais...", "right", ('scr', 'extrude2')),
+        ("More...", "right", ('scr', 'extrude2')),
     ],
     'extrude2': [
-        ("Avançadas", "cog", ('scr', 'advanced')),
+        ("Advanced", "cog", ('scr', 'advanced')),
         None, None, None, None, None, None,
-        ("Voltar", "back", ('scr', 'extrude')),
+        ("Back", "back", ('scr', 'extrude')),
     ],
     'probe': [
         ("Calibrar", "probe", 'PROBE_CALIBRATE'),
@@ -103,8 +102,8 @@ GUI_SCREENS = {
         ("Z +0.1", "up", 'TESTZ Z=+0.1'),
         ("Z +1", "up", 'TESTZ Z=+1'),
         ("Aceitar", "check", 'ACCEPT'),
-        ("Guardar", "save", 'SAVE_CONFIG'),
-        ("Voltar", "back", ('scr', 'main')),
+        ("Save", "save", 'SAVE_CONFIG'),
+        ("Back", "back", ('scr', 'main')),
     ],
     # 'print' is built dynamically from the virtual SD files (see _print_items)
     'print': [],
@@ -125,25 +124,24 @@ GUI_SCREENS = {
         ("Klipper", "refresh", 'RESTART'),
         ("Firmware", "console", 'FIRMWARE_RESTART'),
         ("Reboot", "power", ('host', 'reboot')),
-        ("Desligar", "power", ('host', 'shutdown')),
-        ("Voltar", "back", ('scr', 'main')),
+        ("Shutdown", "power", ('host', 'shutdown')),
+        ("Back", "back", ('scr', 'main')),
     ],
     'network': [],
     'more': [
         ("PID hot", "fire", 'PID_CALIBRATE HEATER=extruder TARGET=200'),
         ("PID bed", "bed", 'PID_CALIBRATE HEATER=heater_bed TARGET=60'),
-        ("Guardar", "save", 'SAVE_CONFIG'),
+        ("Save", "save", 'SAVE_CONFIG'),
         ("Filam", "extrude", ('fsens',)),
-        ("Rede", "network", ('scr', 'network')),
+        ("Network", "network", ('scr', 'network')),
         ("Beep", "alert", ('beep',)),
-        ("Motores OFF", "power", 'M84'),
-        ("Mais...", "right", ('scr', 'more2')),
+        ("Motors OFF", "power", 'M84'),
+        ("More...", "right", ('scr', 'more2')),
     ],
     'more2': [
-        ("Limites", "limits", ('scr', 'limits')),
-        ("Idioma", "script", ('lang',)),
-        None, None, None, None, None,
-        ("Voltar", "back", ('scr', 'more')),
+        ("Limits", "limits", ('scr', 'limits')),
+        None, None, None, None, None, None,
+        ("Back", "back", ('scr', 'more')),
     ],
 }
 
@@ -180,10 +178,10 @@ _SAVE_MAP = {'pa': ('extruder', 'pressure_advance', '%.4f'),
 #   kind: 'temp' reads <src>.target, 'factor' reads gcode_move.<key>,
 #         'fan' reads fan.speed, 'baby' is the live Z offset.
 POPUP_ITEMS = {
-    'etemp': dict(icon='fire', name='Bico', units='C', kind='temp',
+    'etemp': dict(icon='fire', name='Nozzle', units='C', kind='temp',
                   src='extruder', steps=(1., 5., 10.), default=5.,
                   lo=0., hi=270.),
-    'btemp': dict(icon='bed', name='Cama', units='C', kind='temp',
+    'btemp': dict(icon='bed', name='Bed', units='C', kind='temp',
                   src='heater_bed', steps=(1., 5., 10.), default=5.,
                   lo=0., hi=120.),
     'fan': dict(icon='fan', name='Fan', units='%', kind='fan',
@@ -214,22 +212,22 @@ POPUP_ITEMS = {
     'vel': dict(icon='speed', name='Velocity', units='mm/s', kind='vel',
                 steps=(10., 25., 50., 100.), default=10., lo=10., hi=1000.,
                 live=True, dec=0),
-    'accel': dict(icon='move', name='Acceleration', units='mm/s2',
+    'accel': dict(icon='move', name='Accel', units='mm/s2',
                   kind='accel', steps=(100., 500., 1000., 5000.),
                   default=500., lo=100., hi=50000., live=True, dec=0),
-    'scv': dict(icon='limits', name='Square Corner', units='mm/s',
+    'scv': dict(icon='limits', name='Sq Corner', units='mm/s',
                 kind='scv', steps=(0.5, 1., 5.), default=1., lo=0.1, hi=50.,
                 live=True, dec=1),
-    'cruise': dict(icon='fan', name='Min Cruise Ratio', units='',
+    'cruise': dict(icon='fan', name='Min Cruise', units='',
                    kind='cruise', steps=(0.02, 0.05, 0.1), default=0.05,
                    lo=0., hi=0.95, live=True, dec=2),
 }
 
 # Friendly titles for the top bar (otherwise the screen id is shown)
-GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filamento',
-              'estop': 'Confirmar', 'mesh': 'Nivelar',
-              'meshadj': 'Ajustar', 'advanced': 'Avançadas',
-              'limits': 'Limites', 'more2': 'Mais 2/2',
+GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filament',
+              'estop': 'Confirmar', 'mesh': 'Level',
+              'meshadj': 'Adjust', 'advanced': 'Advanced',
+              'limits': 'Limits', 'more2': 'More 2/2',
               'extrude2': 'Extruder 2/2'}
 
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
@@ -390,16 +388,6 @@ class ST7796:
         self._mesh_lbr = None
         # ETA (time to finish) smoothing
         self._eta_hist = []
-        # Language (Mais... -> Idioma); the choice is kept in a small file
-        self._lang_file = os.path.expanduser(
-            '~/printer_data/config/gui_language.txt')
-        lang = config.get('language', 'pt').strip().lower()
-        try:
-            with open(self._lang_file) as f:
-                lang = f.read().strip().lower() or lang
-        except Exception:
-            pass
-        gui_i18n.set_lang(lang)
         # Object preview (slicer thumbnail)
         self._prev_bits = None
         self._prev_key = 0
@@ -905,9 +893,6 @@ class ST7796:
             self.gui_screen = scr
         self._gui_pending = self.printer.get_reactor().monotonic()
     # --- touch (XPT2046 -> Klipper menu gestures) ---
-    def _t(self, s):
-        return gui_i18n.tr(s)
-
     def _get_menu(self):
         if self.menu is None:
             disp = self.printer.lookup_object('display', None)
@@ -1409,9 +1394,9 @@ class ST7796:
             self._gui_heater('bed', 7, 120, bd)
         if self.gui_screen != 'print':
             self._gui_text_center(0, self.width, 7,
-                                  (self._t(GUI_TITLES.get(
+                                  (GUI_TITLES.get(
                                       self.gui_screen,
-                                      self.gui_screen.capitalize()))
+                                      self.gui_screen.capitalize())
                                    + ' ' * 14)[:14], COL_WHITE, bg, 1)
         ctxt, ccol = self._clock_text(eventtime)
         self._gui_text(self.width - 96, 7, ctxt, ccol, bg, 1)
@@ -1648,7 +1633,7 @@ class ST7796:
         y = self.MESH_Y0 + 60 * 3 + 24
         ops.append(lambda y=y: self.cmd_rect.send(
             [self.RAIL_W + 16, y, 168, 16, COL_BG]))
-        lab = self._t("Ponto %d / %d") % (done + 1, total)
+        lab = "Point %d / %d" % (done + 1, total)
         ops.append(lambda y=y, lab=lab: self._gui_text(
             self.RAIL_W + 16, y, lab, COL_WHITE, COL_BG, 1))
 
@@ -1692,8 +1677,8 @@ class ST7796:
         armed = running and eventtime < self._mesh_arm
         # manual point adjustment (only when the printer is not leveling)
         ax, ay, aw, ah = self._mesh_adj_btn()
-        alab, afg, abg = (self._t("AJUSTAR"), COL_DIM, self.gui_btn_bg) \
-            if running else (self._t("AJUSTAR"), COL_WHITE, self.gui_btn_bg)
+        alab, afg, abg = (("ADJUST", COL_DIM, self.gui_btn_bg) if running
+                          else ("ADJUST", COL_WHITE, self.gui_btn_bg))
         ops.append(lambda ax=ax, ay=ay, aw=aw, ah=ah, abg=abg:
                    self._gui_round(ax, ay, aw, ah, abg))
         ops.append(lambda ax=ax, ay=ay, aw=aw, afg=afg, abg=abg:
@@ -1705,18 +1690,16 @@ class ST7796:
             if kind == 'start':
                 icon = 'play48'
                 if running:
-                    lab, fg, bg = self._t("INICIAR"), COL_DIM, \
-                        self.gui_btn_bg
+                    lab, fg, bg = "START", COL_DIM, self.gui_btn_bg
                 else:
-                    lab, fg, bg = self._t("INICIAR"), COL_WHITE, COL_OK
+                    lab, fg, bg = "START", COL_WHITE, COL_OK
             else:
                 icon = 'x48'
                 if running:
-                    lab = self._t("CONFIRMAR" if armed else "ABORTAR")
+                    lab = "CONFIRM" if armed else "ABORT"
                     fg, bg = COL_WHITE, COL_ERR
                 else:
-                    lab, fg, bg = self._t("CANCELAR"), COL_WHITE, \
-                        self.gui_btn_bg
+                    lab, fg, bg = "CANCELAR", COL_WHITE, self.gui_btn_bg
             ops.append(lambda x=x, y=y, w=w, h=h, bg=bg: self._gui_round(
                 x, y, w, h, bg))
             ops.append(lambda x=x, y=y, w=w, icon=icon, fg=fg, bg=bg:
@@ -1735,11 +1718,11 @@ class ST7796:
             self._mesh_done = mk
         done = self._mesh_done
         ops.append(lambda: self._gui_text_center(
-            self.width - 224, 216, self.TOP_H + 12,
-            self._t("VERIFICAR SE O BICO"), COL_WARN, COL_BG, 1))
+            self.width - 224, 216, self.TOP_H + 12, "CHECK THE NOZZLE",
+            COL_WARN, COL_BG, 1))
         ops.append(lambda: self._gui_text_center(
-            self.width - 224, 216, self.TOP_H + 30,
-            self._t("ESTA SUJO (LIMPAR ANTES)"), COL_WARN, COL_BG, 1))
+            self.width - 224, 216, self.TOP_H + 30, "IS DIRTY (CLEAN FIRST)",
+            COL_WARN, COL_BG, 1))
         for (sx, sy, idx, i, j) in pts:
             self._mesh_point_ops(ops, sx, sy, idx, mk, done)
         self._mesh_progress_ops(ops, done, len(pts))
@@ -1841,7 +1824,7 @@ class ST7796:
         except Exception:
             m = None
         if not m or not m[0]:
-            self._gui_warn("Sem malha da cama - faz Nivelar primeiro")
+            self._gui_warn("No bed mesh - run Level first")
             return
         self._adj_orig = [list(r) for r in m]
         self._adj_cur = [list(r) for r in m]
@@ -1886,13 +1869,13 @@ class ST7796:
 
     def _adj_nudge(self, sign, eventtime):
         if not self._adj_at:
-            self._gui_warn("Toca primeiro num ponto da grelha")
+            self._gui_warn("Tap a grid point first")
             return
         step = self.ADJ_STEPS[self._adj_step_i] * sign
         j, i = self._adj_j, self._adj_i
         d = max(-1.0, min(1.0, self._adj_delta + step))
         if abs(d - self._adj_delta) < 1e-9:
-            self._gui_warn("Limite do ajuste (+/-1.0mm)")
+            self._gui_warn("Adjustment limit (+/-1.0mm)")
             return
         self._adj_delta = d
         self._adj_cur[j][i] = self._adj_orig[j][i] + d
@@ -1904,7 +1887,7 @@ class ST7796:
 
     def _adj_save(self, eventtime):
         if not self._adj_dirty():
-            self._gui_warn("Nada para gravar")
+            self._gui_warn("Nothing to save")
             return
         self._gui_msg = "A gravar a malha da cama (SAVE_CONFIG)..."
         self._gui_msg_until = self.printer.get_reactor().monotonic() + 60.
@@ -1947,11 +1930,10 @@ class ST7796:
     def _adj_info_ops(self, ops):
         x, y = self._adj_xy(self._adj_i, self._adj_j)
         ops.append(lambda: self.cmd_rect.send([36, 30, 212, 114, COL_BG]))
-        ops.append(lambda: self._gui_text(42, 34, self._t("AJUSTE"),
-                                          COL_ACTIVE, COL_BG, 1))
+        ops.append(lambda: self._gui_text(42, 34, "ADJUST", COL_ACTIVE,
+                                          COL_BG, 1))
         ops.append(lambda: self._gui_text(
-            42, 52, self._t("PONTO %d,%d") % (self._adj_i + 1,
-                                              self._adj_j + 1),
+            42, 52, "POINT %d,%d" % (self._adj_i + 1, self._adj_j + 1),
             COL_WHITE, COL_BG, 1))
         ops.append(lambda x=x, y=y: self._gui_text(
             42, 68, "X%.0f  Y%.0f" % (x, y), COL_ACTIVE, COL_BG, 1))
@@ -1962,8 +1944,8 @@ class ST7796:
         self._adj_lval = (self._adj_i, self._adj_j, self._adj_delta)
 
     def _adj_pm_ops(self, ops):
-        ops.append(lambda: self._gui_text(42, 208, self._t("PASSO"),
-                                          COL_ACTIVE, COL_BG, 1))
+        ops.append(lambda: self._gui_text(42, 208, "STEP", COL_ACTIVE,
+                                          COL_BG, 1))
         for (x, icon) in ((40, 'down'), (144, 'up')):
             bg = self.gui_btn_bg
             ops.append(lambda x=x, bg=bg: self._gui_round(x, 146, 96, 52, bg))
@@ -1998,7 +1980,7 @@ class ST7796:
         ops.append(lambda x=x, y=y, iw=iw, fg=fg, bg=bg: self._gui_icon_at(
             'save', x + 16, y + 6, fg, bg, 24))
         ops.append(lambda x=x, y=y, fg=fg, bg=bg: self._gui_text(
-            x + 52, y + 10, self._t("GRAVAR"), fg, bg, 1))
+            x + 52, y + 10, "SAVE", fg, bg, 1))
         self._adj_lsave = dirty
 
     def _adj_view_ops(self, ops, eventtime):
@@ -2143,8 +2125,8 @@ class ST7796:
         ops.append(lambda x=x, y=y, h=h, col=col: self.cmd_rect.send(
             [x, y + 4, 6, h - 8, col]))
         ops.append(lambda x=x, y=y, it=it: self._gui_text(
-            x + 14, y + 6, (self._t(it['name']) + ' ' * 12)[:12], COL_WHITE,
-            COL_BG, 1))
+            x + 14, y + 6, (it['name'] + ' ' * 12)[:12], COL_WHITE, COL_BG,
+            1))
         if val:
             ops.append(lambda x=x, y=y, w=w, val=val, col=col:
                        self._gui_text(x + w - len(val) * 8, y + 6, val, col,
@@ -2166,8 +2148,7 @@ class ST7796:
             ops.append(lambda x=x, y=y, w=w, h=h: self.cmd_rect.send(
                 [x, y + h // 2 - 1, w, 1, COL_DIM]))
             ops.append(lambda x=x, y=y, w=w: self._gui_text_center(
-                x, w, y + h // 2 + 6, self._t("sem preview"), COL_DIM,
-                COL_BG, 1))
+                x, w, y + h // 2 + 6, "no preview", COL_DIM, COL_BG, 1))
         # middle column: the info list
         for (rx, ry, rw, rh, key) in self._print_list_rows():
             if values_only:
@@ -2214,9 +2195,9 @@ class ST7796:
         ps = self._print_status(eventtime) or {}
         info = ps.get('info') or {}
         lay, tot = info.get('current_layer'), info.get('total_layer')
-        ltxt = (self._t("CAMADA %s/%s") % (lay, tot)) if lay else ""
+        ltxt = ("LAYER %s/%s" % (lay, tot)) if lay else ""
         dur = ps.get('print_duration') or 0
-        ttxt = self._t("TEMPO %d:%02d") % (dur // 3600, (dur // 60) % 60)
+        ttxt = "TIME %d:%02d" % (dur // 3600, (dur // 60) % 60)
         ly = py + 22
         ops.append(lambda px=px, ly=ly, xyz=xyz: self._gui_text(
             px, ly, xyz, COL_WHITE, COL_BG, 1))
@@ -2230,8 +2211,8 @@ class ST7796:
                 mx, my, ltxt, COL_C3, COL_BG, 1))
         left = self._eta_left(eventtime)
         if left is not None:
-            ftxt = self._t("FALTA %d:%02d") % (int(left) // 3600,
-                                               (int(left) // 60) % 60)
+            ftxt = "LEFT %d:%02d" % (int(left) // 3600,
+                                      (int(left) // 60) % 60)
             ops.append(lambda mx=mx, my=my, ftxt=ftxt: self._gui_text(
                 mx, my + 18, ftxt, COL_WARN, COL_BG, 1))
 
@@ -2258,8 +2239,7 @@ class ST7796:
         ops.append(lambda ico=ico, x=x, y=y, h=h, col=col, ic=it['icon']:
                    self._draw_bmp(ico, x + 14, y + (h - 34) // 2, col,
                                   self.gui_btn_bg, ('mticon', ic, 34)))
-        name = self._t(it['name']) + ((" " + it['units'])
-                                      if it.get('units') else "")
+        name = it['name'] + ((" " + it['units']) if it.get('units') else "")
         ops.append(lambda x=x, y=y, name=name: self._gui_text(
             x + 60, y + 20, name, COL_ACTIVE, self.gui_btn_bg, 1))
         lab = self._fmt_val(it, val)
@@ -2279,7 +2259,7 @@ class ST7796:
         ops.append(lambda x=x, y=y, iw=iw, fg=fg, bg=bg: self._gui_icon_at(
             'save', x + 14, y + 5, fg, bg, 20))
         ops.append(lambda x=x, y=y, fg=fg, bg=bg: self._gui_text(
-            x + 44, y + 7, self._t("GRAVAR no printer.cfg"), fg, bg, 1))
+            x + 44, y + 7, "SAVE to printer.cfg", fg, bg, 1))
 
     def _cards_view_ops(self, ops, keys, eventtime):
         if self._popup is not None:
@@ -2307,7 +2287,7 @@ class ST7796:
             cf.set(ent[0], ent[1], ent[2] % v)
             n += 1
         if not n:
-            self._gui_warn("Nada para gravar neste ecra")
+            self._gui_warn("Nothing to save here")
             return
         self._gui_msg = "A gravar %d valores - SAVE_CONFIG..." % n
         self._gui_msg_until = self.printer.get_reactor().monotonic() + 60.
@@ -2491,8 +2471,7 @@ class ST7796:
         iw = (self._icon_at(it['icon'], 44) or (0, 0))[0]
         ops.append(lambda iw=iw: self._gui_icon_at(
             it['icon'], x0 + 14, y0 + 14, COL_WHITE, COL_BG, 44))
-        ops.append(lambda: self._gui_text(x0 + 74, y0 + 18,
-                                          self._t(it['name']),
+        ops.append(lambda: self._gui_text(x0 + 74, y0 + 18, it['name'],
                                           COL_WHITE, COL_BG, 1))
         val = self._popup_val if self._popup_val is not None \
             else self._popup_read(eventtime)
@@ -2501,7 +2480,7 @@ class ST7796:
                                                   COL_C1, COL_BG, 3))
         if it.get('live'):
             ops.append(lambda: self._gui_text(
-                x0 + 74, y0 + 92, "(live - guardado %+.3f)"
+                x0 + 74, y0 + 92, "(live - saved %+.3f)"
                 % self._baby_saved, COL_DIM, COL_BG, 1))
         for (bx, by, bw, bh, what) in self._popup_btns():
             if what in ('minus', 'plus'):
@@ -2661,7 +2640,7 @@ class ST7796:
             if self._gui_err and now < self._gui_err_until:
                 msg, fg = "ERRO: " + self._gui_err, COL_ERR
             elif self._gui_msg and now < self._gui_msg_until:
-                msg, fg = self._t(self._gui_msg), COL_WARN
+                msg, fg = self._gui_msg, COL_WARN
             else:
                 ds = self.printer.lookup_object('display_status', None)
                 if ds is not None:
@@ -3073,11 +3052,10 @@ class ST7796:
             if idx == 2:
                 self._btn_ops(ops, x, y, w, h,
                               'play48' if paused else 'pause48',
-                              self._t("Continuar" if paused else "Pausa"),
-                              accent=acc)
+                              "Resume" if paused else "Pause", accent=acc)
             else:
-                self._btn_ops(ops, x, y, w, h, 'x48', self._t("Cancelar"),
-                              COL_ERR, accent=acc)
+                self._btn_ops(ops, x, y, w, h, 'x48', "Cancel", COL_ERR,
+                              accent=acc)
     def _gui_render(self, eventtime):
         if self._gui_ops:
             return
@@ -3134,10 +3112,7 @@ class ST7796:
                 label = "E %gmm" % self._ext_step
             elif isinstance(action, tuple) and action[0] == 'fsens':
                 en, det = self._filament_status(eventtime)
-                label = "Filam ON" if en else "Filam OFF"
-            elif isinstance(action, tuple) and action[0] == 'lang':
-                label = self._t("Idioma") + " " + gui_i18n.TAGS.get(
-                    gui_i18n.LANG, 'PT')
+                label = "Filament ON" if en else "Filament OFF"
             elif isinstance(action, tuple) and action[0] == 'bstep':
                 label = "%g" % self._BSTEPS[self._bstep_i]
             elif isinstance(action, tuple) and action[0] == 'baby' \
@@ -3148,7 +3123,6 @@ class ST7796:
                     label = "Baby %.3f" % float(gz[2])
                 except Exception:
                     label = "Baby -"
-            label = self._t(label)
             sc = self._scaled_icon(icon)
             iw, ih = (sc[0], sc[1]) if sc else (0, 0)
             bx, by = x + i2, y + i2
@@ -3245,7 +3219,6 @@ class ST7796:
                 return True
         return False
     def _gui_warn(self, text):
-        text = self._t(text)
         logging.info("st7796: %s", text)
         try:
             self.gcode.respond_info("st7796: " + text)
@@ -3422,7 +3395,7 @@ class ST7796:
             if idx == 2:
                 self._btn_ops(ops, x, y, w, h, 'network', "Anunciar")
             elif idx == 3:
-                self._btn_ops(ops, x, y, w, h, 'back', "Voltar")
+                self._btn_ops(ops, x, y, w, h, 'back', "Back")
     _PTUNE = ('flow', 'speed', 'fan')
     def _ptune_value(self, eventtime):
         try:
@@ -3438,7 +3411,7 @@ class ST7796:
             return "%d%%" % int(round(v * 100))
         except Exception:
             return "--"
-    _TUNE_ROWS = (('Bico', 'etemp', 5.), ('Cama', 'btemp', 5.),
+    _TUNE_ROWS = (('Nozzle', 'etemp', 5.), ('Bed', 'btemp', 5.),
                   ('Flow', 'flow', 1.))
     def _tune_row_btns(self):
         # (label, value, colour, key, row_y, row_h, plus_rect, minus_rect)
@@ -3502,8 +3475,8 @@ class ST7796:
             return
         bw = (self.width - self.RAIL_W) // 4
         iy0 = self.TOP_H
-        for lab, st, cx in (("Cama", bd, self.RAIL_W),
-                            ("Bico", ex, self.RAIL_W + 2 * bw)):
+        for lab, st, cx in (("Bed", bd, self.RAIL_W),
+                            ("Nozzle", ex, self.RAIL_W + 2 * bw)):
             col = self._temp_color(st['temperature'], st['target'])
             val = "%d/%d" % (st['temperature'], st['target'])
             ops.append(lambda cx=cx, bw=bw, iy0=iy0, lab=lab: self._gui_text_center(
@@ -3513,13 +3486,13 @@ class ST7796:
                                              COL_BG, 3))
         for (x, y, w, h, idx, item) in self._gui_buttons():
             if idx == 4:
-                self._btn_ops(ops, x, y, w, h, 'bed', "Cama +")
+                self._btn_ops(ops, x, y, w, h, 'bed', "Bed +")
             elif idx == 5:
-                self._btn_ops(ops, x, y, w, h, 'bed', "Cama -")
+                self._btn_ops(ops, x, y, w, h, 'bed', "Bed -")
             elif idx == 6:
-                self._btn_ops(ops, x, y, w, h, 'fire', "Bico +")
+                self._btn_ops(ops, x, y, w, h, 'fire', "Nozzle +")
             elif idx == 7:
-                self._btn_ops(ops, x, y, w, h, 'fire', "Bico -")
+                self._btn_ops(ops, x, y, w, h, 'fire', "Nozzle -")
     def _big_btn(self, ops, x, y, w, h, label, bg, fg):
         ops.append(lambda x=x, y=y, w=w, h=h, bg=bg: self._gui_round(
             x, y, w, h, bg))
@@ -3536,15 +3509,13 @@ class ST7796:
                 (self.RAIL_W + 2 * bw + 6, y, 2 * bw - 12, h, 'yes')]
     def _estop_view_ops(self, ops, eventtime):
         ops.append(lambda: self._gui_text_center(
-            0, self.width, self.TOP_H + 26, self._t("CONFIRMAR?"), COL_WARN,
-            COL_BG, 3))
+            0, self.width, self.TOP_H + 26, "CONFIRM?", COL_WARN, COL_BG, 3))
         for (x, y, w, h, kind) in self._estop_btns():
             if kind == 'yes':
-                self._big_btn(ops, x, y, w, h, self._t("SIM"), COL_ERR,
-                              COL_WHITE)
+                self._big_btn(ops, x, y, w, h, "SIM", COL_ERR, COL_WHITE)
             else:
-                self._big_btn(ops, x, y, w, h, self._t("NAO"),
-                              self.gui_btn_bg, COL_WHITE)
+                self._big_btn(ops, x, y, w, h, "NAO", self.gui_btn_bg,
+                              COL_WHITE)
     def _host_power(self, what):
         # Runs in a worker thread: ask Moonraker (it holds the privileges).
         try:
@@ -3579,15 +3550,6 @@ class ST7796:
         elif isinstance(action, tuple) and action[0] == 'beep':
             self.gui_beep = not self.gui_beep
             self._gui_render(eventtime)
-        elif isinstance(action, tuple) and action[0] == 'lang':
-            lang = gui_i18n.next_lang()
-            try:
-                with open(self._lang_file, 'w') as f:
-                    f.write(lang)
-            except Exception:
-                logging.exception("st7796: nao consegui gravar o idioma")
-            self.gcode.respond_info("GUI idioma: %s" % lang)
-            self._gui_render(eventtime)
         elif isinstance(action, tuple) and action[0] == 'ext':
             i = self._ext_steps.index(self._ext_step)
             self._ext_step = self._ext_steps[(i + 1) % len(self._ext_steps)]
@@ -3610,7 +3572,7 @@ class ST7796:
                 self._gui_render(eventtime)
                 return
             self.gcode.respond_info("GUI: gravar o baby step na probe")
-            self._gui_msg = "A gravar o baby step (SAVE_CONFIG)..."
+            self._gui_msg = "Saving the baby step..."
             self._gui_msg_until = (
                 self.printer.get_reactor().monotonic() + 20.)
             self._baby_dirty = False
@@ -3622,10 +3584,10 @@ class ST7796:
             except Exception:
                 st = 'ready'
             if action[1] == 'load':
-                self._gui_msg = "A introduzir o filamento (~100mm)..."
+                self._gui_msg = "Loading filament (~100mm)..."
                 script = 'LOAD_FILAMENT'
             else:
-                self._gui_msg = "A retirar o filamento..."
+                self._gui_msg = "Unloading filament..."
                 script = ('PAUSE\n' if st == 'printing' else '')
                 script += 'UNLOAD_FILAMENT'
             try:
@@ -3649,8 +3611,8 @@ class ST7796:
             what = 'reboot' if action[1] == 'reboot' else 'shutdown'
             self.gcode.respond_info("GUI: host %s" % what)
             try:
-                self._gui_msg = ("A reiniciar o host..." if what == 'reboot'
-                                 else "A desligar o host...")
+                self._gui_msg = ("Rebooting the host..." if what == 'reboot'
+                                 else "Shutting the host down...")
                 self._gui_msg_until = (
                     self.printer.get_reactor().monotonic() + 15.)
             except Exception:
@@ -3677,7 +3639,7 @@ class ST7796:
                 self.gcode.respond_info(
                     "st7796: anuncio SSDP enviado na rede (%s)" % ip)
             else:
-                self._gui_warn("Falha ao anunciar na rede")
+                self._gui_warn("Network announce failed")
         elif isinstance(action, tuple) and action[0] == 'fsens':
             en, det = self._filament_status(eventtime)
             new = 0 if en else 1
@@ -3698,7 +3660,7 @@ class ST7796:
             except Exception:
                 state = 'ready'
             if state in ('printing', 'paused'):
-                self._gui_warn("Impressao em curso - cancelar primeiro")
+                self._gui_warn("Printing - cancel first")
                 return
             fname = str(action[1]).replace('"', '')
             self.gcode.respond_info("GUI print: %s" % fname)
@@ -3719,7 +3681,7 @@ class ST7796:
             except Exception:
                 st = 'ready'
             if st in ('printing', 'paused'):
-                self._gui_warn("Impressao em curso - M84 bloqueado")
+                self._gui_warn("Printing - M84 blocked")
                 return
         if (isinstance(script, str) and self.extrude_min_temp > 0
                 and self._needs_hot_end(script)):
@@ -3788,7 +3750,7 @@ class ST7796:
                     self.gcode.respond_info(
                         "GUI: nivelamento em curso - AJUSTAR desligado")
                     return
-                self.gcode.respond_info("GUI: Ajustar pontos da malha")
+                self.gcode.respond_info("GUI: adjust mesh points")
                 self._adj_open(eventtime)
                 return
             for (x, y, w, h, kind) in self._mesh_btns():
@@ -3809,14 +3771,14 @@ class ST7796:
                     if now < self._mesh_arm:
                         self.gcode.respond_info(
                             "GUI: ABORTAR nivelamento (M112 - FIRMWARE_RESTART)")
-                        self._gui_msg = "Nivelamento abortado (M112)"
+                        self._gui_msg = "Leveling aborted (M112)"
                         self._gui_msg_until = now + 15.
                         self._mesh_arm = 0.
                         self._gui_run_action("M112")
                     else:
                         self._mesh_arm = now + 5.
                         self.gcode.respond_info("GUI: ABORTAR? toca outra vez")
-                        self._gui_msg = "Toca outra vez para ABORTAR (M112)"
+                        self._gui_msg = "Tap again to ABORT (M112)"
                         self._gui_msg_until = now + 6.
                         self._gui_render(now)
                 else:
@@ -3848,8 +3810,8 @@ class ST7796:
                     if x <= sx < x + w and y <= sy < y + h:
                         if idx == 2:
                             self.gcode.respond_info(
-                                "GUI: %s" % ("Continuar" if paused
-                                             else "Pausa"))
+                                "GUI: %s" % ("Resume" if paused
+                                             else "Pause"))
                             self._gui_do('RESUME' if paused else 'PAUSE',
                                          eventtime)
                             self._gui_defer(eventtime, 0.8)
