@@ -86,6 +86,7 @@ GUI_SCREENS = {
         ("Bico 200", "fire", 'M104 S200'),
         ("Bico 240", "fire", 'M104 S240'),
         ("E 1mm", "extrude", ('ext',)),
+        ("Avançadas", "cog", ('scr', 'advanced')),
         ("Voltar", "back", ('scr', 'main')),
     ],
     'probe': [
@@ -129,6 +130,7 @@ GUI_SCREENS = {
         ("Rede", "network", ('scr', 'network')),
         ("Beep", "alert", ('beep',)),
         ("Motores OFF", "power", 'M84'),
+        ("Limites", "limits", ('scr', 'limits')),
         ("Voltar", "back", ('scr', 'main')),
     ],
 }
@@ -141,7 +143,26 @@ GUI_STRIP = {
 }
 
 # Screens whose button grid is not the default 4 columns x 2 rows
-GUI_ROWS = {'print': 2}
+GUI_ROWS = {'print': 2, 'extrude': 3, 'more': 3}
+GUI_COLS = {'extrude': 3, 'more': 3}
+
+# Advanced (extruder) and machine limit screens: POPUP_ITEMS keys per card.
+ADV_KEYS = ('pa', 'smooth', 'shx', 'shy')
+LIM_KEYS = ('vel', 'accel', 'scv', 'cruise')
+
+# kind -> (printer status key, SET_VELOCITY_LIMIT argument)
+_LIM_MAP = {'vel': ('max_velocity', 'VELOCITY'),
+            'accel': ('max_accel', 'ACCEL'),
+            'scv': ('square_corner_velocity', 'SQUARE_CORNER_VELOCITY'),
+            'cruise': ('minimum_cruise_ratio', 'MINIMUM_CRUISE_RATIO')}
+
+# key -> (config section, option, format) for the GRAVAR button
+_SAVE_MAP = {'pa': ('extruder', 'pressure_advance', '%.4f'),
+             'smooth': ('extruder', 'pressure_advance_smooth_time', '%.4f'),
+             'vel': ('printer', 'max_velocity', '%.1f'),
+             'accel': ('printer', 'max_accel', '%.1f'),
+             'scv': ('printer', 'square_corner_velocity', '%.2f'),
+             'cruise': ('printer', 'minimum_cruise_ratio', '%.3f')}
 
 # Generic adjustment popups (one implementation for every info icon).
 #   kind: 'temp' reads <src>.target, 'factor' reads gcode_move.<key>,
@@ -164,12 +185,39 @@ POPUP_ITEMS = {
     'baby': dict(icon='zoffset', name='Baby', units='mm', kind='baby',
                  steps=(0.005, 0.01, 0.1, 0.5), default=0.01,
                  lo=-5., hi=5., live=True, save=True),
+    # --- Avancadas (extrusor + input shaper) ---
+    'pa': dict(icon='speed', name='Pressure Advance', units='', kind='pa',
+               steps=(0.002, 0.005, 0.01, 0.02, 0.05), default=0.005,
+               lo=0., hi=1.5, live=True, dec=3),
+    'smooth': dict(icon='clock20', name='Smooth Time', units='s',
+                   kind='smooth', steps=(0.005, 0.01, 0.02), default=0.01,
+                   lo=0.005, hi=0.2, live=True, dec=3),
+    'shx': dict(icon='refresh', name='Shaper X', units='Hz', kind='shx',
+                steps=(1., 2., 5.), default=1., lo=0., hi=200., live=True,
+                dec=1),
+    'shy': dict(icon='refresh', name='Shaper Y', units='Hz', kind='shy',
+                steps=(1., 2., 5.), default=1., lo=0., hi=200., live=True,
+                dec=1),
+    # --- Limites da maquina ---
+    'vel': dict(icon='speed', name='Velocity', units='mm/s', kind='vel',
+                steps=(10., 25., 50., 100.), default=10., lo=10., hi=1000.,
+                live=True, dec=0),
+    'accel': dict(icon='move', name='Acceleration', units='mm/s2',
+                  kind='accel', steps=(100., 500., 1000., 5000.),
+                  default=500., lo=100., hi=50000., live=True, dec=0),
+    'scv': dict(icon='limits', name='Square Corner', units='mm/s',
+                kind='scv', steps=(0.5, 1., 5.), default=1., lo=0.1, hi=50.,
+                live=True, dec=1),
+    'cruise': dict(icon='fan', name='Min Cruise Ratio', units='',
+                   kind='cruise', steps=(0.02, 0.05, 0.1), default=0.05,
+                   lo=0., hi=0.95, live=True, dec=2),
 }
 
 # Friendly titles for the top bar (otherwise the screen id is shown)
 GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filamento',
               'estop': 'Confirmar', 'mesh': 'Nivelar',
-              'meshadj': 'Ajustar'}
+              'meshadj': 'Ajustar', 'advanced': 'Avançadas',
+              'limits': 'Limites'}
 
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
 ICON = 0x100
@@ -327,6 +375,8 @@ class ST7796:
         self._mesh_ldone = 0x7FFFFFFF
         self._mesh_ltv = None
         self._mesh_lbr = None
+        # ETA (time to finish) smoothing
+        self._eta_hist = []
         # Auto recovery after the board reboots (SD firmware update)
         self._mcu_file = os.path.expanduser(
             '~/printer_data/config/.mcu_recover')
@@ -1231,7 +1281,8 @@ class ST7796:
             return []
         return GUI_SCREENS.get(self.gui_screen, [])
     def _gui_buttons(self):
-        cols, rows = 4, GUI_ROWS.get(self.gui_screen, 2)
+        cols = GUI_COLS.get(self.gui_screen, 4)
+        rows = GUI_ROWS.get(self.gui_screen, 2)
         x0, y0 = self.RAIL_W, self.TOP_H
         x1, y1 = self.width, self.height - self.STRIP_H
         bw = (x1 - x0) // cols
@@ -1244,8 +1295,14 @@ class ST7796:
                         bw, bh, idx, item))
         return out
     def _gui_rail(self):
-        back = ('scr', 'print') if self.gui_screen in ('ptune', 'filament') \
-            else ('scr', 'mesh' if self.gui_screen == 'meshadj' else 'main')
+        back = {'meshadj': 'mesh', 'advanced': 'extrude',
+                'limits': 'more'}.get(self.gui_screen)
+        if back is None:
+            back = ('scr', 'print') if self.gui_screen in ('ptune',
+                                                           'filament') \
+                else ('scr', 'main')
+        else:
+            back = ('scr', back)
         items = [('back24', back), ('home24', ('scr', 'main')),
                  ('files24', ('scr', 'print')), ('alert24', ('scr', 'power'))]
         n = len(items)
@@ -1316,14 +1373,8 @@ class ST7796:
                                       self.gui_screen,
                                       self.gui_screen.capitalize())
                                    + ' ' * 14)[:14], COL_WHITE, bg, 1)
-        try:
-            dur = int(self.printer.lookup_object('print_stats').get_status(
-                eventtime)['print_duration'])
-        except Exception:
-            dur = 0
-        self._gui_text(self.width - 96, 7,
-                       "%02d:%02d" % (dur // 3600, (dur // 60) % 60),
-                       COL_WHITE, bg, 1)
+        ctxt, ccol = self._clock_text(eventtime)
+        self._gui_text(self.width - 96, 7, ctxt, ccol, bg, 1)
         if self.gui_version:
             self._gui_text(self.width - 170, 7,
                            (self.gui_version + ' ' * 8)[:8], COL_DIM, bg, 1)
@@ -1343,17 +1394,45 @@ class ST7796:
         self._gui_icon_at('hourglass20', self.width - 22, 11,
                           COL_WHITE if dead else COL_DIM, self.gui_bar_bg,
                           11)
-    def _gui_clock(self, eventtime):
-        # Minimal heartbeat while the display is muted: just the clock + the
-        # hourglass (~60 bytes), so the screen does not look frozen.
+    def _eta_left(self, eventtime):
+        # Seconds left (smoothed) while printing, else None.
+        try:
+            ps = self.printer.lookup_object('print_stats').get_status(
+                eventtime)
+            if ps.get('state') not in ('printing', 'paused'):
+                self._eta_hist = []
+                return None
+            prog = float(self.printer.lookup_object(
+                'virtual_sdcard').get_status(eventtime).get('progress') or 0.)
+            dur = float(ps.get('print_duration') or 0.)
+        except Exception:
+            return None
+        if prog < 0.02 or dur < 30.:
+            return None
+        left = dur * (1. - prog) / prog
+        self._eta_hist.append(left)
+        if len(self._eta_hist) > 6:
+            self._eta_hist.pop(0)
+        return sum(self._eta_hist) / len(self._eta_hist)
+
+    def _clock_text(self, eventtime):
+        # (text, colour): time to finish while printing, elapsed otherwise.
+        left = self._eta_left(eventtime)
+        if left is not None:
+            return ("%02d:%02d" % (int(left) // 3600, (int(left) // 60) % 60),
+                    COL_WARN)
         try:
             dur = int(self.printer.lookup_object('print_stats').get_status(
                 eventtime)['print_duration'])
         except Exception:
             dur = 0
-        self._gui_text(self.width - 96, 7,
-                       "%02d:%02d" % (dur // 3600, (dur // 60) % 60),
-                       COL_WHITE, self.gui_bar_bg, 1)
+        return ("%02d:%02d" % (dur // 3600, (dur // 60) % 60), COL_WHITE)
+
+    def _gui_clock(self, eventtime):
+        # Minimal heartbeat while the display is muted: just the clock + the
+        # hourglass (~60 bytes), so the screen does not look frozen.
+        txt, col = self._clock_text(eventtime)
+        self._gui_text(self.width - 96, 7, txt, col, self.gui_bar_bg, 1)
         self._draw_hourglass(True)
     # --- bed mesh probing map ---------------------------------------------
     def _mesh_hook(self):
@@ -1936,6 +2015,100 @@ class ST7796:
             return True
         return False
 
+    # --- Avancadas / Limites: 2x2 cards + GRAVAR ---------------------------
+    def _card_rects(self):
+        x0, y0 = self.RAIL_W + 8, self.TOP_H + 8
+        w = (self.width - x0 - 16) // 2
+        h = (self.height - self.STRIP_H - y0 - 8 - 38) // 2
+        return [(x0 + (i % 2) * (w + 8), y0 + (i // 2) * (h + 8), w, h)
+                for i in range(4)]
+
+    def _cards_save_rect(self):
+        x0 = self.RAIL_W + 8
+        return (x0, self.height - self.STRIP_H - 38,
+                self.width - x0 - 16, 30)
+
+    def _big_card_ops(self, ops, x, y, w, h, key, idx, eventtime):
+        it = POPUP_ITEMS[key]
+        val = self._key_value(key, eventtime)
+        col = self._gc(idx)
+        ops.append(lambda x=x, y=y, w=w, h=h: self._gui_round(
+            x, y, w, h, self.gui_btn_bg))
+        ico = self._icon_at(it['icon'], 34)
+        ops.append(lambda ico=ico, x=x, y=y, h=h, col=col, ic=it['icon']:
+                   self._draw_bmp(ico, x + 14, y + (h - 34) // 2, col,
+                                  self.gui_btn_bg, ('mticon', ic, 34)))
+        name = it['name'] + ((" " + it['units']) if it.get('units') else "")
+        ops.append(lambda x=x, y=y, name=name: self._gui_text(
+            x + 60, y + 20, name, COL_ACTIVE, self.gui_btn_bg, 1))
+        lab = self._fmt_val(it, val)
+        ops.append(lambda x=x, y=y, lab=lab, col=col: self._gui_text(
+            x + 60, y + 44, lab, col, self.gui_btn_bg, 2))
+        ops.append(lambda x=x, y=y, w=w, h=h, col=col: self.cmd_rect.send(
+            [x + 12, y + h - 12, w - 24, 5, col]))
+
+    def _cards_save_ops(self, ops, keys):
+        x, y, w, h = self._cards_save_rect()
+        ready = any(k in _SAVE_MAP for k in keys)
+        bg = COL_OK if ready else self.gui_btn_bg
+        fg = COL_WHITE if ready else COL_DIM
+        iw = (self._icon_at('save', 20) or (0, 0))[0]
+        ops.append(lambda x=x, y=y, w=w, h=h, bg=bg: self._gui_round(
+            x, y, w, h, bg))
+        ops.append(lambda x=x, y=y, iw=iw, fg=fg, bg=bg: self._gui_icon_at(
+            'save', x + 14, y + 5, fg, bg, 20))
+        ops.append(lambda x=x, y=y, fg=fg, bg=bg: self._gui_text(
+            x + 44, y + 7, "GRAVAR no printer.cfg", fg, bg, 1))
+
+    def _cards_view_ops(self, ops, keys, eventtime):
+        if self._popup is not None:
+            # modal: the adjustment panel takes over the cards area
+            ops.append(lambda: self.cmd_rect.send(
+                [self.RAIL_W, self.TOP_H, self.width - self.RAIL_W,
+                 self.height - self.TOP_H - self.STRIP_H, COL_BG]))
+            self._popup_view_ops(ops, eventtime)
+            return
+        for i, (x, y, w, h) in enumerate(self._card_rects()):
+            if i < len(keys):
+                self._big_card_ops(ops, x, y, w, h, keys[i], i, eventtime)
+        self._cards_save_ops(ops, keys)
+
+    def _cards_save(self, keys, eventtime):
+        cf = self.printer.lookup_object('configfile')
+        n = 0
+        for k in keys:
+            ent = _SAVE_MAP.get(k)
+            if ent is None:
+                continue
+            v = self._key_value(k, eventtime)
+            if v is None:
+                continue
+            cf.set(ent[0], ent[1], ent[2] % v)
+            n += 1
+        if not n:
+            self._gui_warn("Nada para gravar neste ecra")
+            return
+        self._gui_msg = "A gravar %d valores - SAVE_CONFIG..." % n
+        self._gui_msg_until = self.printer.get_reactor().monotonic() + 60.
+        self.gcode.respond_info("GUI: a gravar %d valores no printer.cfg" % n)
+        self._gui_run_action("SAVE_CONFIG")
+
+    def _cards_tap(self, sx, sy, keys, eventtime):
+        if self._popup is not None:
+            self._popup_tap(sx, sy, eventtime)
+            return True
+        for i, (x, y, w, h) in enumerate(self._card_rects()):
+            if i < len(keys) and x <= sx < x + w and y <= sy < y + h:
+                self.gcode.respond_info("GUI: ajuste %s"
+                                        % POPUP_ITEMS[keys[i]]['name'])
+                self._popup_open(keys[i], eventtime)
+                return True
+        x, y, w, h = self._cards_save_rect()
+        if x <= sx < x + w and y <= sy < y + h:
+            self._cards_save(keys, eventtime)
+            return True
+        return False
+
     # --- inline adjustment panel (drawn where the info tiles are) --------
     def _baby_load(self):
         try:
@@ -1971,12 +2144,9 @@ class ST7796:
         y0 = self.TOP_H + 2
         return x0, y0, (self.width - 100) - x0, 2 * 88
 
-    def _popup_read(self, eventtime):
-        it = self._popup_state()
-        if it is None:
-            return None
+    def _read_kind(self, it, eventtime):
+        k = it['kind']
         try:
-            k = it['kind']
             if k == 'temp':
                 return float(self.printer.lookup_object(
                     it['src']).get_status(eventtime)['target'])
@@ -1991,19 +2161,49 @@ class ST7796:
                 gp = self.printer.lookup_object(
                     'gcode_move').get_status(eventtime)['gcode_position']
                 return float(gp[2]) - self._baby_base
+            if k in ('pa', 'smooth'):
+                st = self.printer.lookup_object('extruder').get_status(
+                    eventtime)
+                return float(st.get('pressure_advance' if k == 'pa'
+                                    else 'smooth_time') or 0.)
+            if k in ('shx', 'shy'):
+                st = self.printer.lookup_object('input_shaper').get_status(
+                    eventtime)
+                return float(st.get('shaper_freq_x' if k == 'shx'
+                                    else 'shaper_freq_y') or 0.)
+            if k in _LIM_MAP:
+                st = self.printer.lookup_object('toolhead').get_status(
+                    eventtime)
+                return float(st.get(_LIM_MAP[k][0]) or 0.)
         except Exception:
             return None
         return None
 
-    def _popup_fmt(self, val):
+    def _popup_read(self, eventtime):
         it = self._popup_state()
+        if it is None:
+            return None
+        return self._read_kind(it, eventtime)
+
+    def _key_value(self, key, eventtime):
+        it = POPUP_ITEMS.get(key)
+        return None if it is None else self._read_kind(it, eventtime)
+
+    def _fmt_val(self, it, val):
         if it is None or val is None:
             return "-"
-        if it['kind'] == 'baby':
+        k = it['kind']
+        if k == 'baby':
             return "%+.3f" % val
-        if it['kind'] == 'temp':
+        if k == 'temp':
             return "%d" % round(val)
-        return "%d%%" % round(val)
+        if k in ('factor', 'fan'):
+            return "%d%%" % round(val)
+        dec = it.get('dec', 3)
+        return ("%%.%df%%s" % dec) % (val, it.get('units', ''))
+
+    def _popup_fmt(self, val):
+        return self._fmt_val(self._popup_state(), val)
 
     def _popup_apply(self, val):
         it = self._popup_state()
@@ -2020,6 +2220,34 @@ class ST7796:
             return "M106 S%d" % int(round(val * 255. / 100.))
         if k == 'baby':
             return "SET_GCODE_OFFSET Z_ADJUST=%+.3f MOVE=1" % val
+        try:
+            if k in ('pa', 'smooth'):
+                st = self.printer.lookup_object('extruder').get_status(0)
+                pa = float(st.get('pressure_advance') or 0.)
+                sm = float(st.get('smooth_time') or 0.)
+                if k == 'pa':
+                    pa += val
+                else:
+                    sm += val
+                self._popup_val = pa if k == 'pa' else sm
+                return ("SET_PRESSURE_ADVANCE ADVANCE=%.4f SMOOTH_TIME=%.4f"
+                        % (pa, sm))
+            if k in ('shx', 'shy'):
+                st = self.printer.lookup_object(
+                    'input_shaper').get_status(0)
+                key = 'shaper_freq_x' if k == 'shx' else 'shaper_freq_y'
+                f = float(st.get(key) or 0.) + val
+                self._popup_val = f
+                return "SET_INPUT_SHAPER SHAPER_FREQ_%s=%.1f" % (
+                    'X' if k == 'shx' else 'Y', f)
+            if k in _LIM_MAP:
+                skey, arg = _LIM_MAP[k]
+                st = self.printer.lookup_object('toolhead').get_status(0)
+                v = float(st.get(skey) or 0.) + val
+                self._popup_val = v
+                return "SET_VELOCITY_LIMIT %s=%.4f" % (arg, v)
+        except Exception:
+            logging.exception("st7796: falha a aplicar %s", k)
         return None
 
     def _popup_btns(self):
@@ -2125,7 +2353,9 @@ class ST7796:
                 sign = 1. if what == 'plus' else -1.
                 if it.get('live'):
                     amt = self._popup_step * sign
-                    cur = self._popup_read(eventtime)
+                    cur = self._popup_val
+                    if cur is None:
+                        cur = self._popup_read(eventtime)
                     if cur is None or cur + amt < it['lo'] \
                             or cur + amt > it['hi']:
                         return True
@@ -2679,6 +2909,10 @@ class ST7796:
             self._mesh_view_ops(ops, eventtime)
         elif self.gui_screen == 'meshadj':
             self._adj_view_ops(ops, eventtime)
+        elif self.gui_screen == 'advanced':
+            self._cards_view_ops(ops, ADV_KEYS, eventtime)
+        elif self.gui_screen == 'limits':
+            self._cards_view_ops(ops, LIM_KEYS, eventtime)
         g = self.gui_btn_gap
         i2 = g // 2
         for (x, y, w, h, idx, item) in self._gui_buttons():
@@ -3317,6 +3551,10 @@ class ST7796:
                         return
         if self.gui_screen == 'meshadj':
             if self._adj_tap(sx, sy, eventtime):
+                return
+        if self.gui_screen in ('advanced', 'limits'):
+            keys = ADV_KEYS if self.gui_screen == 'advanced' else LIM_KEYS
+            if self._cards_tap(sx, sy, keys, eventtime):
                 return
         if self.gui_screen == 'mesh':
             ax, ay, aw, ah = self._mesh_adj_btn()
