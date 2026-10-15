@@ -34,7 +34,7 @@ COL_HEAT   = 0xEB20   # #ED6500  orange  -> heating towards the target
 COL_OK     = 0x2DE9   # #2DBF4A  green   -> at/over the target (-3C)
 COL_COOL   = 0x2DBE   # #29B6F6  blue    -> cooling (target 0)
 COL_DIM    = 0x39E7   # #3A3A3A  grey    -> disabled rail icons
-COL_PREVIEW = 0xC618  # #C6C6C6  light grey -> dithered object preview
+COL_PREVIEW = COL_C3  # #009384  teal (theme accent) -> object preview
 
 # Accent colours for the button underlines: the 4 theme accents plus 4 more, so
 # each of the 8 grid buttons gets its own colour.
