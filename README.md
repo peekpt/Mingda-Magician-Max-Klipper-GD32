@@ -20,8 +20,9 @@ a Raspberry Pi over a **serial (UART) link**. Assumes basic electronics skills
 
 Tested on: Mingda Magician Max (GD32F407VET6 mainboard) + Raspberry Pi Zero 2 W.
 
-> The stock touchscreen is **not supported** by Klipper — you use Mainsail/Fluidd
-> in a browser instead.
+> This repo also drives the **stock ST7796 touchscreen** with a custom MCU
+> (FSMC) driver + Klipper GUI chip — see `mcu/README.md`. Mainsail/Fluidd in a
+> browser still work alongside it.
 
 ## Folder layout
 
@@ -41,7 +42,12 @@ your-folder/
 2. Copy `firmware.bin` to the **root** of the card (keep the name `firmware.bin`).
 3. Printer **off** → insert the card → power **on**. The screen shows a flashing
    percentage.
-4. When it finishes, **remove the card** and power-cycle the printer.
+4. At 100% the bootloader **reboots the board by itself** — no second power cycle
+   is needed. The panel shows the boot splash (drawn by the MCU) while Klipper
+   starts up. The card can be removed afterwards.
+5. The Klipper host lost the MCU connection during the flash, so it comes back in
+   *shutdown*: run **`FIRMWARE_RESTART`** (⚠ → *Firmware* on the stock panel, or
+   the *Firmware Restart* button in Mainsail/Fluidd).
 
 ## 2. Wiring
 
