@@ -12,6 +12,7 @@ import re
 import socket
 import subprocess
 import threading
+import time
 import urllib.request
 from . import tft_icons
 
@@ -326,6 +327,10 @@ class ST7796:
         self._mesh_ldone = 0x7FFFFFFF
         self._mesh_ltv = None
         self._mesh_lbr = None
+        # Auto recovery after the board reboots (SD firmware update)
+        self._mcu_file = os.path.expanduser(
+            '~/printer_data/config/.mcu_recover')
+        self._mcu_fix_at = 0.
         # Manual mesh point adjustment
         self._adj_orig = []
         self._adj_cur = []
@@ -826,6 +831,10 @@ class ST7796:
                 self.menu = getattr(disp, 'menu', None)
         return self.menu
     def _touch_event(self, eventtime):
+        self._mcu_recover(eventtime)
+        if self.printer.is_shutdown():
+            # No MCU session: nothing can be drawn or touched on the panel.
+            return eventtime + 0.5
         if self.gui and self._disp_quiet(eventtime):
             # Printer is homing/moving: stay off the link. During homing/probing
             # stay completely silent (trsync timing), otherwise send a tiny
@@ -2312,8 +2321,71 @@ class ST7796:
         self._homing_t = self.printer.get_reactor().monotonic()
         logging.info("st7796: homing end - display resumed (depth %d)",
                      self._homing)
+    # Klipper shuts down when it loses the MCU. That is exactly what happens
+    # when the board is flashed from the SD card: the bootloader takes over,
+    # updates the firmware and reboots the board on its own. Nothing can be
+    # drawn or touched on the panel while the MCU is unconfigured, so instead
+    # of an on-screen button we simply bring Klipper back by ourselves.
+    # Lost link, or an MCU shutdown with no reason - i.e. the board went away
+    # (rebooted / was taken over by the SD bootloader). "Command request" (M112)
+    # and real MCU errors are deliberately *not* matched.
+    _MCU_RE = re.compile(r"Lost communication with MCU"
+                         r"|MCU '\w+' shutdown:\s*(?:\n|$)")
+
+    def _mcu_budget(self):
+        # (attempts in the last hour, seconds since the last attempt)
+        try:
+            with open(self._mcu_file) as f:
+                last, n = [float(x) for x in f.read().split()]
+        except Exception:
+            last, n = 0., 0.
+        if n >= 3 and time.time() - last < 3600.:
+            return n, time.time() - last
+        if time.time() - last < 45.:
+            return n, time.time() - last
+        return n, time.time() - last
+
+    def _mcu_mark(self):
+        try:
+            with open(self._mcu_file) as f:
+                last, n = [float(x) for x in f.read().split()]
+        except Exception:
+            last, n = 0., 0.
+        try:
+            with open(self._mcu_file, 'w') as f:
+                f.write("%f %d" % (time.time(), n + 1))
+        except Exception:
+            logging.exception("st7796: nao consegui escrever %s"
+                              % self._mcu_file)
+
+    def _mcu_recover(self, eventtime):
+        if not self.printer.is_shutdown():
+            return
+        n, age = self._mcu_budget()
+        if n >= 3 and age < 3600.:
+            return                      # already tried enough: give up
+        if age < 45. and n:
+            return                      # never hammer the machine
+        try:
+            msg, cat = self.printer.get_state_message()
+        except Exception:
+            return
+        if cat != 'shutdown' or not self._MCU_RE.search(msg or ""):
+            return
+        self._mcu_mark()
+        logging.info("st7796: MCU perdido (%.60s) - FIRMWARE_RESTART automatico"
+                     " (tentativa %d)", msg.splitlines()[0], n + 1)
+        try:
+            self.gcode.run_script_from_command("FIRMWARE_RESTART")
+        except Exception:
+            logging.exception("st7796: FIRMWARE_RESTART automatico falhou")
+
     def _on_connect(self):
         self._mesh_hook()
+        try:
+            os.remove(self._mcu_file)   # recovered: reset the budget
+        except Exception:
+            pass
         self._homing = 0
         self._baby_load()
         if self._baby_saved:
