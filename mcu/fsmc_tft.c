@@ -17,7 +17,9 @@
 #include "command.h" // DECL_COMMAND
 #include "sched.h" // DECL_INIT
 #include "generic/misc.h" // timer_read_time
+#include "generic/armcm_timer.h" // udelay
 #include "font8x14.h"
+#include "splash.h"
 
 #define TFT_REG (*(volatile uint16_t *)0x60FFFFFEUL) // RS low  (A23=0)
 #define TFT_RAM (*(volatile uint16_t *)0x61000000UL) // RS high (A23=1)
@@ -472,10 +474,90 @@ tft_touch_task(void)
 }
 DECL_TASK(tft_touch_task);
 
+// ---------------------------------------------------------------------------
+// Panel bring-up at MCU power-on + branding splash
+//
+// The host sends the same register sequence when Klipper connects (it is what
+// makes the colours right), but doing it here means the panel is out of its
+// power-on state as soon as the printer is switched on - so a splash can be
+// shown while Linux and Klipper boot.
+// ---------------------------------------------------------------------------
+static void
+tft_cmd(uint8_t reg, const uint8_t *data, uint8_t n)
+{
+    TFT_REG = reg;
+    while (n--)
+        TFT_RAM = *data++;
+}
+
+static void
+tft_panel_init(void)
+{
+    udelay(120000);                    // panel power-on
+    tft_cmd(0x01, 0, 0);               // SWRESET
+    udelay(120000);
+    tft_cmd(0x11, 0, 0);               // SLPOUT
+    udelay(120000);
+    tft_cmd(0x36, (const uint8_t[]){0xE8}, 1);           // MADCTL
+    tft_cmd(0xF0, (const uint8_t[]){0xC3}, 1);
+    tft_cmd(0xF0, (const uint8_t[]){0x96}, 1);
+    tft_cmd(0x3A, (const uint8_t[]){0x55}, 1);           // COLMOD 16bpp
+    tft_cmd(0xB4, (const uint8_t[]){0x00}, 1);           // init_dic
+    tft_cmd(0xB7, (const uint8_t[]){0xC6}, 1);
+    tft_cmd(0xC1, (const uint8_t[]){0x15}, 1);
+    tft_cmd(0xC2, (const uint8_t[]){0xAF}, 1);
+    tft_cmd(0xC5, (const uint8_t[]){0x22}, 1);           // init_vcom
+    tft_cmd(0xC6, (const uint8_t[]){0x00}, 1);           // init_vcomofs
+    tft_cmd(0xE8, (const uint8_t[]){0x40, 0x8A, 0x00, 0x00, 0x29, 0x19,
+                                    0xA5, 0x33}, 8);
+    tft_cmd(0xE0, (const uint8_t[]){0xF0, 0x04, 0x08, 0x09, 0x08, 0x15,
+                                    0x2F, 0x42, 0x46, 0x28, 0x15, 0x16,
+                                    0x29, 0x2D}, 14);
+    tft_cmd(0xE1, (const uint8_t[]){0xF0, 0x04, 0x09, 0x09, 0x08, 0x15,
+                                    0x2E, 0x46, 0x46, 0x28, 0x15, 0x15,
+                                    0x29, 0x2D}, 14);
+    tft_cmd(0x13, 0, 0);               // NORON
+    tft_cmd(0x53, (const uint8_t[]){0x24}, 1);           // WRDISBV
+    tft_cmd(0xF0, (const uint8_t[]){0x3C}, 1);
+    tft_cmd(0xF0, (const uint8_t[]){0x69}, 1);
+    tft_cmd(0x29, 0, 0);               // DISPON
+    udelay(20000);
+}
+
+// Draw the branding splash (run-length encoded 4bpp palette indices).
+void
+tft_splash(void)
+{
+    uint32_t total = (uint32_t)SPLASH_W * SPLASH_H;
+    uint32_t n = 0, i;
+    tft_set_window(0, 0, SPLASH_W - 1, SPLASH_H - 1);
+    TFT_REG = 0x2C;                    // RAMWR
+    for (i = 0; i + 1 < SPLASH_RLE_LEN && n < total; i += 2) {
+        uint16_t col = splash_pal[splash_rle[i + 1] % SPLASH_NCOL];
+        uint32_t cnt = splash_rle[i];
+        while (cnt-- && n < total) {
+            TFT_RAM = col;
+            n++;
+        }
+    }
+    while (n++ < total)                // safety: fill any remainder
+        TFT_RAM = splash_pal[SPLASH_BG];
+}
+
+// tft_splash            (no arguments)
+void
+command_tft_splash(uint32_t *args)
+{
+    tft_splash();
+}
+DECL_COMMAND(command_tft_splash, "tft_splash");
+
 void
 tft_init(void)
 {
     tft_fsmc_setup();
+    tft_panel_init();
+    tft_splash();
     tp_setup();
 }
 DECL_INIT(tft_init);

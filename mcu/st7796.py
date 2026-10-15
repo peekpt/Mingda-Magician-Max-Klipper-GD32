@@ -457,6 +457,13 @@ class ST7796:
         self.init_vcom = int(config.get('init_vcom', '0x22'), 0) & 0xFF
         self.init_vcomofs = int(config.get('init_vcomofs', '0x00'), 0) & 0xFF
         self.init_gamma = config.getboolean('init_gamma', True)
+        # The MCU initialises the panel itself at power-on, so the host can
+        # skip its software reset (it would wipe the boot splash).
+        self.init_reset = config.getboolean('init_reset', True)
+        # Boot splash drawn by the MCU (keep it on screen while Klipper boots).
+        self.splash = config.getboolean('splash', True)
+        self.splash_time = config.getfloat('splash_time', 0.9, minval=0.0)
+        self.cmd_splash = None
         self.width = config.getint('width', 480, minval=1)
         self.height = config.getint('height', 320, minval=1)
         # Command lookups happen in init(): the MCU command dictionary is only
@@ -515,6 +522,7 @@ class ST7796:
             "tft_str x=%hu y=%hu scale=%c text=%*s fg=%hu bg=%hu")
         self.cmd_tcfg = self.mcu.try_lookup_command(
             "tft_touch_cfg threshold=%hu period=%hu")
+        self.cmd_splash = self.mcu.try_lookup_command("tft_splash")
         if None in (self.cmd_cmd, self.cmd_data, self.cmd_rect, self.cmd_char):
             logging.info("st7796: MCU has no tft_* commands (flash the display"
                          " firmware); display disabled for now")
@@ -525,7 +533,9 @@ class ST7796:
         print_time = mcu.estimated_print_time(reactor.monotonic())
         c1 = mcu.print_time_to_clock(print_time + 0.12)
         c2 = mcu.print_time_to_clock(print_time + 0.24)
-        self.cmd_cmd.send([0x01])                 # SWRESET (now)
+        c3 = mcu.print_time_to_clock(print_time + 0.36)
+        if self.init_reset:
+            self.cmd_cmd.send([0x01])             # SWRESET (now)
         self.cmd_cmd.send([0x11], minclock=c1)    # SLPOUT (+120ms)
         self.cmd_cmd.send([0x36], minclock=c2)    # MADCTL
         self.cmd_data.send([self.madctl], minclock=c2)
@@ -557,6 +567,11 @@ class ST7796:
                 self.cmd_data.send([d], minclock=c2)
         self.cmd_rect.send([0, 0, self.width, self.height, self.bg],
                            minclock=c2)
+        # Ask the MCU to (re)draw the boot splash now that its init commands
+        # have gone through, and hold it before drawing the GUI.
+        splash = bool(self.splash and self.cmd_splash is not None)
+        if splash:
+            self.cmd_splash.send([], minclock=c3)
         self.grid = [[ord(' ')] * self.cols for _ in range(self.rows)]
         self.shown = [[ord(' ')] * self.cols for _ in range(self.rows)]
         try:
@@ -586,8 +601,10 @@ class ST7796:
             "tft_rrect x=%hu y=%hu w=%hu h=%hu r=%c color=%hu")
         if self.gui and self.cmd_bmp is not None:
             # Draw after the panel init commands (which are scheduled ~0.24 s
-            # out) so the init doesn't wipe the GUI.
-            self._gui_pending = reactor.monotonic() + 0.30
+            # out) so the init doesn't wipe the GUI. With the boot splash the
+            # first frame waits a bit longer.
+            delay = 0.36 + self.splash_time if splash else 0.30
+            self._gui_pending = reactor.monotonic() + delay
         if self.gui or (self.query_touch is not None and self.touch_enable):
             reactor.update_timer(self.touch_timer, reactor.NOW)
     def clear(self):
