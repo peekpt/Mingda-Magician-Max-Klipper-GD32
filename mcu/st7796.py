@@ -2135,14 +2135,20 @@ class ST7796:
 
     def _print_3col_ops(self, ops, eventtime, values_only=False):
         x, y, w, h = self._print_img_rect()
-        bits, bw, bh = self._prev_bits
         ops.append(lambda x=x, y=y, w=w, h=h: self.cmd_rect.send(
             [x, y, w, h, COL_BG]))
-        bx = x + max(0, (w - bw) // 2)
-        by = y + max(0, (h - bh) // 2)
-        ops.append(lambda bx=bx, by=by, bits=bits, bw=bw, bh=bh:
-                   self._bmp_at((bw, bh, bits), bx, by, COL_PREVIEW, COL_BG,
-                                ('prev', self._prev_key)))
+        if self._prev_bits:
+            bits, bw, bh = self._prev_bits
+            bx = x + max(0, (w - bw) // 2)
+            by = y + max(0, (h - bh) // 2)
+            ops.append(lambda bx=bx, by=by, bits=bits, bw=bw, bh=bh:
+                       self._bmp_at((bw, bh, bits), bx, by, COL_PREVIEW,
+                                    COL_BG, ('prev', self._prev_key)))
+        else:
+            ops.append(lambda x=x, y=y, w=w, h=h: self.cmd_rect.send(
+                [x, y + h // 2 - 1, w, 1, COL_DIM]))
+            ops.append(lambda x=x, y=y, w=w: self._gui_text_center(
+                x, w, y + h // 2 + 6, "sem preview", COL_DIM, COL_BG, 1))
         # middle column: the info list
         for (rx, ry, rw, rh, key) in self._print_list_rows():
             if values_only:
@@ -2335,9 +2341,10 @@ class ST7796:
         return POPUP_ITEMS.get(self._popup)
 
     def _popup_area(self):
+        # Keep clear of the right hand button column (132px + margin).
         x0 = self.RAIL_W + 2
         y0 = self.TOP_H + 2
-        return x0, y0, (self.width - 100) - x0, 2 * 88
+        return x0, y0, (self.width - 148) - x0, 2 * 104
 
     def _read_kind(self, it, eventtime):
         k = it['kind']
@@ -3020,18 +3027,13 @@ class ST7796:
         if ps is None:
             return
         if self._popup is not None:
-            # adjustment panel drawn where the info tiles normally are
+            # adjustment panel takes over the whole content area
+            ops.append(lambda: self.cmd_rect.send(
+                [self.RAIL_W, self.TOP_H, self.width - self.RAIL_W,
+                 self.height - self.TOP_H - self.STRIP_H, COL_BG]))
             self._popup_view_ops(ops, eventtime)
-        elif self._prev_show():
-            self._print_3col_ops(ops, eventtime, values_only)
         else:
-            for (tx, ty, tw, th, i, k) in self._print_panel():
-                val, col = self._panel_value(k, eventtime)
-                it = POPUP_ITEMS[k]
-                draw = (not values_only) or (self._card_cols.get(i) != col)
-                self._card_cols[i] = col
-                self._card_ops(ops, tx, ty, tw, th, it['icon'], val, col,
-                               draw)
+            self._print_3col_ops(ops, eventtime, values_only)
         # X / Y / Z line
         try:
             gp = self.printer.lookup_object(
@@ -3040,39 +3042,6 @@ class ST7796:
                                          float(gp[2]))
         except Exception:
             xyz = "X- Y- Z-"
-        if self._popup is None and self._prev_show():
-            self._print_btns_ops(ops, ps)
-            return
-        py = self.TOP_H + 2 + 2 * 88
-        ops.append(lambda xyz=xyz, py=py: self._gui_text_center(
-            self.RAIL_W, self.width - 100 - self.RAIL_W, py + 4, xyz,
-            COL_WHITE, COL_BG, 1))
-        # progress bar (with side padding) and its percentage
-        prog = 0.
-        try:
-            prog = float(self.printer.lookup_object('virtual_sdcard')
-                         .get_status(eventtime).get('progress') or 0.)
-        except Exception:
-            prog = 0.
-        if not prog:
-            prog = float(ps.get('progress') or 0.)
-        prog = min(1., max(0., prog))
-        px0 = self.RAIL_W + 18
-        bwp = self.width - 100 - self.RAIL_W - 36
-        n = max(4, bwp // 8)
-        f = int(round(prog * n))
-        bx = px0 + (bwp - n * 8) // 2
-        by = py + 24
-        if f > 0:
-            ops.append(lambda bx=bx, by=by, f=f: self._gui_text(
-                bx, by, "\xdb" * f, COL_C1, COL_BG, 1))
-        if n - f > 0:
-            ops.append(lambda bx=bx, by=by, f=f, n=n: self._gui_text(
-                bx + f * 8, by, "\xb0" * (n - f), COL_ACTIVE, COL_BG, 1))
-        pct = "%d%%" % int(round(prog * 100))
-        tx = bx + max(0, (n * 8 - len(pct) * 8) // 2)
-        ops.append(lambda tx=tx, by=by, pct=pct: self._gui_text(
-            tx, by, pct, COL_WHITE, COL_BG, 1))
         self._print_btns_ops(ops, ps)
 
     def _print_btns_ops(self, ops, ps):
@@ -3829,22 +3798,13 @@ class ST7796:
             if self._print_view(eventtime):
                 ps = self._print_status(eventtime) or {}
                 paused = ps.get('state') == 'paused'
-                if self._prev_bits:
-                    # 3 column layout: the list rows open the adjustment panel
+                if self._popup is None:
+                    # list rows open the same inline panel the tiles used to
                     for (rx, ry, rw, rh, key) in self._print_list_rows():
                         if rx <= sx < rx + rw and ry <= sy < ry + rh:
                             self.gcode.respond_info("GUI: ajuste %s"
                                                     % POPUP_ITEMS[key]['name'])
                             self._popup_open(key, eventtime)
-                            return
-                if self._popup is not None:
-                    if self._popup_tap(sx, sy, eventtime):
-                        return
-                elif self._popup is None:
-                    for (tx, ty, tw, th, i, k) in self._print_panel():
-                        if tx <= sx < tx + tw and ty <= sy < ty + th:
-                            self.gcode.respond_info("GUI: ajuste %s" % k)
-                            self._popup_open(k, eventtime)
                             return
                 for (x, y, w, h, idx) in self._print_btns():
                     if x <= sx < x + w and y <= sy < y + h:
