@@ -2112,8 +2112,28 @@ class ST7796:
         x = self.RAIL_W + 24
         return (x, self.TOP_H + 8, self.PREVIEW_SIZE, self.PREVIEW_SIZE)
 
-    def _preview_view_ops(self, ops, eventtime):
-        x, y, w, h = self._preview_rect()
+    def _prev_show(self):
+        # The preview is always on while printing (no toggle any more).
+        return bool(self._prev_bits)
+
+    def _row_ops(self, ops, x, y, w, h, key, eventtime):
+        it = POPUP_ITEMS[key]
+        val, col = self._panel_value(key, eventtime)
+        ops.append(lambda x=x, y=y, w=w, col=col: self.cmd_rect.send(
+            [x - 6, y, w + 6, h, COL_BG]))
+        ops.append(lambda x=x, y=y, h=h, col=col: self.cmd_rect.send(
+            [x, y + 4, 6, h - 8, col]))
+        ops.append(lambda x=x, y=y, it=it: self._gui_text(
+            x + 14, y + 6, (it['name'] + ' ' * 12)[:12], COL_WHITE, COL_BG,
+            1))
+        if val:
+            ops.append(lambda x=x, y=y, w=w, val=val, col=col:
+                       self._gui_text(x + w - len(val) * 8, y + 6, val, col,
+                                      COL_BG, 1))
+        self._card_cols[key] = (val, col)
+
+    def _print_3col_ops(self, ops, eventtime, values_only=False):
+        x, y, w, h = self._print_img_rect()
         bits, bw, bh = self._prev_bits
         ops.append(lambda x=x, y=y, w=w, h=h: self.cmd_rect.send(
             [x, y, w, h, COL_BG]))
@@ -2122,30 +2142,72 @@ class ST7796:
         ops.append(lambda bx=bx, by=by, bits=bits, bw=bw, bh=bh:
                    self._bmp_at((bw, bh, bits), bx, by, COL_WHITE, COL_BG,
                                 ('prev', self._prev_key)))
+        # middle column: the info list
+        for (rx, ry, rw, rh, key) in self._print_list_rows():
+            if values_only:
+                it = POPUP_ITEMS[key]
+                val, col = self._panel_value(key, eventtime)
+                if self._card_cols.get(key) == (val, col):
+                    continue
+            self._row_ops(ops, rx, ry, rw, rh, key, eventtime)
+        # progress bar + position under the image
+        prog = 0.
+        try:
+            prog = float(self.printer.lookup_object(
+                'virtual_sdcard').get_status(eventtime).get('progress') or 0.)
+        except Exception:
+            prog = 0.
+        if not prog:
+            try:
+                prog = float(self._print_status(eventtime).get('progress')
+                             or 0.)
+            except Exception:
+                prog = 0.
+        prog = min(1., max(0., prog))
+        px, py, pw, ph = self._print_bar_rect()
+        n = max(4, pw // 8 - 2)
+        f = int(round(prog * n))
+        bx0 = px + (pw - n * 8) // 2
+        if f > 0:
+            ops.append(lambda bx0=bx0, py=py, f=f: self._gui_text(
+                bx0, py, "\xdb" * f, COL_C1, COL_BG, 1))
+        if n - f > 0:
+            ops.append(lambda bx0=bx0, py=py, f=f, n=n: self._gui_text(
+                bx0 + f * 8, py, "\xb0" * (n - f), COL_ACTIVE, COL_BG, 1))
+        pct = "%d%%" % int(round(prog * 100))
+        ops.append(lambda bx0=bx0, py=py, n=n, pct=pct: self._gui_text(
+            bx0 + max(0, (n * 8 - len(pct) * 8) // 2), py, pct, COL_WHITE,
+            COL_BG, 1))
+        try:
+            gp = self.printer.lookup_object(
+                'gcode_move').get_status(eventtime)['gcode_position']
+            xyz = "X%.1f Y%.1f Z%.1f" % (float(gp[0]), float(gp[1]),
+                                         float(gp[2]))
+        except Exception:
+            xyz = "X- Y- Z-"
         ps = self._print_status(eventtime) or {}
-        tx = x + w + 14
-        fname = os.path.basename(ps.get('filename') or '-')
-        ops.append(lambda tx=tx, y=y, fname=fname: self._gui_text(
-            tx, y + 8, (fname + ' ' * 16)[:16], COL_WHITE, COL_BG, 1))
         info = ps.get('info') or {}
         lay, tot = info.get('current_layer'), info.get('total_layer')
-        if lay:
-            ops.append(lambda tx=tx, y=y, lay=lay, tot=tot: self._gui_text(
-                tx, y + 34, "CAMADA %s/%s" % (lay, tot or '?'), COL_C3,
-                COL_BG, 1))
+        ltxt = ("CAMADA %s/%s" % (lay, tot)) if lay else ""
         dur = ps.get('print_duration') or 0
-        ops.append(lambda tx=tx, y=y, dur=dur: self._gui_text(
-            tx, y + 54, "DECORRIDO %d:%02d" % (dur // 3600,
-                                               (dur // 60) % 60),
-            COL_ACTIVE, COL_BG, 1))
+        ttxt = "TEMPO %d:%02d" % (dur // 3600, (dur // 60) % 60)
+        ly = py + 22
+        ops.append(lambda px=px, ly=ly, xyz=xyz: self._gui_text(
+            px, ly, xyz, COL_WHITE, COL_BG, 1))
+        ops.append(lambda px=px, ly=ly, ttxt=ttxt: self._gui_text(
+            px, ly + 18, ttxt, COL_ACTIVE, COL_BG, 1))
+        # layer / time-to-finish in the middle column, under the list
+        mx = self.RAIL_W + 170
+        my = self.TOP_H + 6 + 6 * 28 + 6
+        if ltxt:
+            ops.append(lambda mx=mx, my=my, ltxt=ltxt: self._gui_text(
+                mx, my, ltxt, COL_C3, COL_BG, 1))
         left = self._eta_left(eventtime)
         if left is not None:
-            ops.append(lambda tx=tx, y=y, left=left: self._gui_text(
-                tx, y + 74, "FALTA %d:%02d" % (int(left) // 3600,
-                                               (int(left) // 60) % 60),
-                COL_WARN, COL_BG, 1))
-        ops.append(lambda tx=tx, y=y, h=h: self._gui_text(
-            tx, y + h - 20, "toca p/ fechar", COL_DIM, COL_BG, 1))
+            ftxt = "FALTA %d:%02d" % (int(left) // 3600,
+                                      (int(left) // 60) % 60)
+            ops.append(lambda mx=mx, my=my, ftxt=ftxt: self._gui_text(
+                mx, my + 18, ftxt, COL_WARN, COL_BG, 1))
 
     # --- Avancadas / Limites: 2x2 cards + GRAVAR ---------------------------
     def _card_rects(self):
@@ -2838,13 +2900,28 @@ class ST7796:
         ps = self._print_status(eventtime)
         return ps is not None and ps['state'] in ('printing', 'paused')
     def _print_btns(self):
-        # 1 x 2 column on the right: Pause/Continue (idx 2) + Cancel (idx 3).
-        bw = 92
-        x = self.width - bw - 6
-        y0 = self.TOP_H + 4
-        y1 = self.height - self.STRIP_H - 6
-        h = (y1 - y0 - 8) // 2
-        return [(x, y0, bw, h, 2), (x, y0 + h + 8, bw, h, 3)]
+        # Right column: Pause/Continue (idx 2) + Cancel (idx 3).
+        bw = 132
+        x = self.width - bw - 8
+        y0 = self.TOP_H + 10
+        h = 108
+        return [(x, y0, bw, h, 2), (x, y0 + h + 12, bw, h, 3)]
+
+    def _print_img_rect(self):
+        # Left column: the object preview, scaled to fit.
+        return (self.RAIL_W + 4, self.TOP_H + 6, 162, 162)
+
+    def _print_list_rows(self):
+        # Middle column: the info items as a list (colour stripe + value).
+        x = self.RAIL_W + 170
+        y0 = self.TOP_H + 6
+        return [(x, y0 + i * 28, 128, 28, k)
+                for i, k in enumerate(self._PRINT_KEYS)]
+
+    def _print_bar_rect(self):
+        # Progress bar, under the image.
+        x, y, w, h = self._print_img_rect()
+        return (x, y + h + 10, w, 16)
     _PRINT_KEYS = ('etemp', 'btemp', 'fan', 'flow', 'speed', 'baby')
     def _print_panel(self):
         # (x, y, w, h, index, popup key) for the 3x2 tappable info tiles.
@@ -2944,8 +3021,8 @@ class ST7796:
         if self._popup is not None:
             # adjustment panel drawn where the info tiles normally are
             self._popup_view_ops(ops, eventtime)
-        elif self._preview_active(eventtime):
-            self._preview_view_ops(ops, eventtime)
+        elif self._prev_show():
+            self._print_3col_ops(ops, eventtime, values_only)
         else:
             for (tx, ty, tw, th, i, k) in self._print_panel():
                 val, col = self._panel_value(k, eventtime)
@@ -2962,6 +3039,9 @@ class ST7796:
                                          float(gp[2]))
         except Exception:
             xyz = "X- Y- Z-"
+        if self._popup is None and self._prev_show():
+            self._print_btns_ops(ops, ps)
+            return
         py = self.TOP_H + 2 + 2 * 88
         ops.append(lambda xyz=xyz, py=py: self._gui_text_center(
             self.RAIL_W, self.width - 100 - self.RAIL_W, py + 4, xyz,
@@ -2992,6 +3072,9 @@ class ST7796:
         tx = bx + max(0, (n * 8 - len(pct) * 8) // 2)
         ops.append(lambda tx=tx, by=by, pct=pct: self._gui_text(
             tx, by, pct, COL_WHITE, COL_BG, 1))
+        self._print_btns_ops(ops, ps)
+
+    def _print_btns_ops(self, ops, ps):
         # Right column: Pause/Continue (idx 2) + Cancel (idx 3)
         paused = ps['state'] == 'paused'
         for (x, y, w, h, idx) in self._print_btns():
@@ -3745,22 +3828,18 @@ class ST7796:
             if self._print_view(eventtime):
                 ps = self._print_status(eventtime) or {}
                 paused = ps.get('state') == 'paused'
-                # object preview: the image itself or the progress bar row
-                # toggles it (the bar row is not used for anything else)
                 if self._prev_bits:
-                    px, py, pw, ph = self._preview_rect()
-                    on_img = (px <= sx < px + pw and py <= sy < py + ph)
-                    on_bar = (self.RAIL_W <= sx < 300
-                              and self.TOP_H + 170 <= sy < self.TOP_H + 200)
-                    if on_img or on_bar:
-                        self._prev_toggle = not self._prev_toggle
-                        self._prev_until = 0.
-                        self._gui_render(eventtime)
-                        return
+                    # 3 column layout: the list rows open the adjustment panel
+                    for (rx, ry, rw, rh, key) in self._print_list_rows():
+                        if rx <= sx < rx + rw and ry <= sy < ry + rh:
+                            self.gcode.respond_info("GUI: ajuste %s"
+                                                    % POPUP_ITEMS[key]['name'])
+                            self._popup_open(key, eventtime)
+                            return
                 if self._popup is not None:
                     if self._popup_tap(sx, sy, eventtime):
                         return
-                else:
+                elif self._popup is None:
                     for (tx, ty, tw, th, i, k) in self._print_panel():
                         if tx <= sx < tx + tw and ty <= sy < ty + th:
                             self.gcode.respond_info("GUI: ajuste %s" % k)
