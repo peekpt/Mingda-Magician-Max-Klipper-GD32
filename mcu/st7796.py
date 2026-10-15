@@ -586,6 +586,11 @@ class ST7796:
         splash = bool(self.splash and self.cmd_splash is not None)
         if splash:
             self.cmd_splash.send([], minclock=c3)
+            logging.info("st7796: boot splash repintado pelo MCU (%.1fs)"
+                         % self.splash_time)
+        elif self.splash:
+            logging.info("st7796: boot splash pedido mas o MCU nao tem"
+                         " tft_splash (firmware antigo)")
         self.grid = [[ord(' ')] * self.cols for _ in range(self.rows)]
         self.shown = [[ord(' ')] * self.cols for _ in range(self.rows)]
         try:
