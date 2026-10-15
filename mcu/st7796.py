@@ -52,7 +52,7 @@ GUI_SCREENS = {
         ("Temperatura", "heatup", ('scr', 'temperature')),
         ("Extruder", "extrude", ('scr', 'extrude')),
         ("Imprimir", "print", ('scr', 'print')),
-        ("Nivelar", "bedmesh", ('scr', 'nivelar')),
+        ("Nivelar", "bedmesh", ('scr', 'mesh')),
         ("Z Calibrar", "zoffset", ('scr', 'probe')),
         ("Mais", "settings", ('scr', 'more')),
         ("Home", "home", 'G28'),
@@ -167,8 +167,7 @@ POPUP_ITEMS = {
 
 # Friendly titles for the top bar (otherwise the screen id is shown)
 GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filamento',
-              'estop': 'Confirmar', 'mesh': 'Nivelar',
-              'nivelar': 'Nivelar'}
+              'estop': 'Confirmar', 'mesh': 'Nivelar'}
 
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
 ICON = 0x100
@@ -234,6 +233,7 @@ EXTRA_ICONS = {
     'hourglass20': _mk_bmp(20, _hourglass_fn),
     'dot10': _mk_bmp(10, _dot_fn),
     'dot12': _mk_bmp(12, _dot_fn),
+    'dot22': _mk_bmp(22, _dot_fn),
     'dot18': _mk_bmp(18, _dot_fn),
     'dot30': _mk_bmp(30, _dot_fn),
 }
@@ -310,6 +310,8 @@ class ST7796:
         self._g29_base = None
         self._mesh_hooked = False
         self._mesh_arm = 0.
+        self._mesh_run = 0
+        self._mesh_t = 0.
         self._mesh_hook()
         # Touch (XPT2046)
         self.gcode = gcode
@@ -382,7 +384,6 @@ class ST7796:
         self._mesh_done = -1
         self._mesh_prev = None
         self._mesh_prev_screen = 'print'
-        self._mesh_draw = False
         try:
             old = gcode.ready_gcode_handlers  # noqa
         except Exception:
@@ -777,26 +778,16 @@ class ST7796:
             # Printer is homing/moving: stay off the link. During homing/probing
             # stay completely silent (trsync timing), otherwise send a tiny
             # heartbeat (clock + hourglass) so the screen doesn't look frozen.
-            if (self._mesh_active and not self._homing
-                    and eventtime >= self._gui_beat and not self._gui_ops):
-                # Let the probe map advance while travelling between probe
-                # points - only when the move queue is deep enough to absorb a
-                # small burst (never during a probe move: _homing).
-                self._gui_beat = eventtime + 0.3
+            if (self._mesh_run > 0 and not self._homing
+                    and not self._gui_ops and eventtime >= self._gui_beat):
+                # Leveling: keep the screen alive - temperatures while heating,
+                # the map while travelling between probe points. Never during a
+                # probe move (_homing): that is when trsync timing is critical.
+                self._gui_beat = eventtime + 0.4
                 try:
-                    st = self.printer.lookup_object('toolhead').get_status(
-                        eventtime)
-                    deep = st['print_time'] - st['estimated_print_time'] > 0.4
+                    self._gui_render(eventtime)
                 except Exception:
-                    deep = False
-                if deep:
-                    try:
-                        ops = []
-                        self._mesh_view_ops(ops, eventtime)
-                        self._mesh_draw = True
-                        self._gui_enqueue(ops)
-                    except Exception:
-                        self._mesh_draw = False
+                    logging.exception("st7796: leveling redraw failed")
                 return eventtime + 0.1
             if not self._homing and eventtime >= self._gui_beat:
                 self._gui_beat = eventtime + 1.0
@@ -852,6 +843,11 @@ class ST7796:
         if eventtime >= self._gui_next:
             self._gui_next = eventtime + 0.5
             self._gui_bars(eventtime)
+        if (self.gui_screen == 'mesh' and not self._gui_ops
+                and eventtime >= self._mesh_t):
+            # leveling screen: refresh the temperatures / the probe map
+            self._mesh_t = eventtime + (0.4 if self._mesh_active else 1.0)
+            self._gui_pending = eventtime
     def _touch_sample(self, x, y, z, eventtime):
         if self.touch_debug:
             self._dbg_i = (getattr(self, '_dbg_i', 0) + 1) % 4
@@ -1327,6 +1323,7 @@ class ST7796:
             return
         reactor = self.printer.get_reactor()
         prev = self.gui_screen
+        self._mesh_run += 1
         try:
             self._mesh_notice()
             if self.gui:
@@ -1337,6 +1334,7 @@ class ST7796:
         try:
             self._g29_base(gcmd)
         finally:
+            self._mesh_run = max(0, self._mesh_run - 1)
             if self.gui:
                 self.gui_screen = prev or 'print'
                 self._gui_defer(reactor.monotonic(), 0.3)
@@ -1349,6 +1347,7 @@ class ST7796:
         reactor = self.printer.get_reactor()
         prev = self.gui_screen
         self._mesh_active = True
+        self._mesh_run += 1
         self._mesh_done = -1
         self._mesh_arm = 0.
         try:
@@ -1362,6 +1361,7 @@ class ST7796:
             self._mesh_base(gcmd)
         finally:
             self._mesh_active = False
+            self._mesh_run = max(0, self._mesh_run - 1)
             if self.gui:
                 self.gui_screen = prev or 'print'
                 self._gui_defer(reactor.monotonic(), 0.3)
@@ -1395,7 +1395,7 @@ class ST7796:
     def _mesh_pts(self, mn, mx, cx, cy):
         # [(screen_x, screen_y, probe index, col, row)] - the probe order is
         # serpentine, the on-screen layout is the plain grid.
-        x0, y0 = self.RAIL_W + 18, self.TOP_H + 16
+        x0, y0 = self.RAIL_W + 14, self.TOP_H + 16
         gw, gh = 196, 196
         out = []
         for j in range(cy):
@@ -1417,7 +1417,7 @@ class ST7796:
             d = (px - hx) ** 2 + (py - hy) ** 2
             if best is None or d < best[0]:
                 best = (d, idx, sx, sy)
-        if best is not None and best[1] > self._mesh_done:
+        if self._mesh_active and best is not None and best[1] > self._mesh_done:
             self._mesh_done = best[1]
         cols = sorted({p[0] for p in pts})
         rows = sorted({p[1] for p in pts})
@@ -1429,32 +1429,40 @@ class ST7796:
             ops.append(lambda gy=gy, a=cols[0], b=cols[-1]: self.cmd_rect.send(
                 [a, gy, b - a + 1, 1, COL_DIM]))
         dot = EXTRA_ICONS['dot10']
-        big = EXTRA_ICONS['dot30']
+        ring = EXTRA_ICONS['dot30']
+        core = EXTRA_ICONS['dot22']
         for (sx, sy, idx, i, j) in pts:
-            if best is not None and idx == best[1]:
-                ops.append(lambda sx=sx, sy=sy, d=big: self._bmp_at(
-                    d, sx - 15, sy - 15, COL_ERR, COL_BG, ('dot30', 0)))
+            if self._mesh_active and best is not None and idx == best[1]:
+                # point being probed: big red dot with a thin white ring
+                ops.append(lambda sx=sx, sy=sy, d=ring: self._bmp_at(
+                    d, sx - 15, sy - 15, COL_WHITE, COL_BG, ('dot30', 0)))
+                ops.append(lambda sx=sx, sy=sy, d=core: self._bmp_at(
+                    d, sx - 11, sy - 11, COL_ERR, COL_BG, ('dot22', 0)))
             else:
-                col = COL_OK if idx <= self._mesh_done else COL_ACTIVE
+                col = COL_ERR if idx <= self._mesh_done else COL_ACTIVE
                 ops.append(lambda sx=sx, sy=sy, c=col, d=dot: self._bmp_at(
                     d, sx - 5, sy - 5, c, COL_BG, ('dot10', 0)))
         ops.append(lambda: self._gui_text(
-            self.RAIL_W + 22, rows[-1] + 22,
+            self.RAIL_W + 16, rows[-1] + 24,
             "Ponto %d / %d" % (self._mesh_done + 1, len(pts)),
             COL_WHITE, COL_BG, 1))
-        ops.append(lambda: self._gui_text(
-            self.RAIL_W + 22, rows[-1] + 40,
-            "Aquece cama+bico - limpa o bico!", COL_WARN, COL_BG, 1))
-        # temperatures (icon + value)
+        # --- right column: warning, temperatures, buttons ------------------
+        cx0, cw = self.width - 224, 216
+        ops.append(lambda: self._gui_text_center(
+            cx0, cw, self.TOP_H + 12, "VERIFICAR SE O BICO", COL_WARN,
+            COL_BG, 1))
+        ops.append(lambda: self._gui_text_center(
+            cx0, cw, self.TOP_H + 30, "ESTA SUJO (LIMPAR ANTES)", COL_WARN,
+            COL_BG, 1))
         try:
             ex = self.printer.lookup_object('extruder').get_status(eventtime)
             bd = self.printer.lookup_object('heater_bed').get_status(eventtime)
         except Exception:
             ex = bd = None
-        tx = self.width - 196
+        tx = self.width - 202
         if ex is not None:
             for k, (icon, stt) in enumerate((('nozzle', ex), ('bed', bd))):
-                ty = self.TOP_H + 16 + k * 46
+                ty = self.TOP_H + 58 + k * 44
                 ico = self._icon_at(icon, 22)
                 col = self._temp_color(stt['temperature'], stt['target'])
                 lbl = "%d/%d" % (stt['temperature'], stt['target'])
@@ -1463,53 +1471,36 @@ class ST7796:
                                           ('mticon', icon, 22)))
                 ops.append(lambda tx=tx, ty=ty, c=col, s=lbl:
                            self._gui_text(tx + 30, ty + 3, s, c, COL_BG, 1))
-        # abort button (two taps: it stops the printer with M112)
-        bx, by, bw, bh = self._mesh_abort_btn()
+        # --- buttons: start (disabled while leveling) / cancel-abort -------
         armed = eventtime < self._mesh_arm
-        lab = "CONFIRMAR" if armed else "ABORTAR"
-        ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self._gui_round(
-            bx, by, bw, bh, COL_ERR))
-        ops.append(lambda bx=bx, by=by, bw=bw: self._gui_icon_at(
-            'x48', bx + (bw - 48) // 2, by + 8, COL_WHITE, COL_ERR, 48))
-        ops.append(lambda bx=bx, by=by, bw=bw, lab=lab: self._gui_text_center(
-            bx, bw, by + 62, lab, COL_WHITE, COL_ERR, 1))
-
-    def _mesh_abort_btn(self):
-        return (self.width - 202, self.TOP_H + 118, 188, 92)
-
-    # --- leveling warning / confirm screen --------------------------------
-    def _nivelar_btns(self):
-        bw = (self.width - self.RAIL_W) // 4
-        y = self.TOP_H + 120
-        h = min(110, self.height - self.STRIP_H - y - 12)
-        return [(self.RAIL_W + 6, y, 2 * bw - 12, h, 'yes'),
-                (self.RAIL_W + 2 * bw + 6, y, 2 * bw - 12, h, 'no')]
-
-    def _nivelar_view_ops(self, ops, eventtime):
-        ops.append(lambda: self._gui_text_center(
-            0, self.width, self.TOP_H + 14, "NIVELAMENTO DA CAMA",
-            COL_WARN, COL_BG, 2))
-        ops.append(lambda: self._gui_text_center(
-            0, self.width, self.TOP_H + 52,
-            "Vai aquecer a cama a 60C e o bico a 200C",
-            COL_WHITE, COL_BG, 1))
-        ops.append(lambda: self._gui_text_center(
-            0, self.width, self.TOP_H + 72, "para fazer o teste de nivelamento.",
-            COL_WHITE, COL_BG, 1))
-        ops.append(lambda: self._gui_text_center(
-            0, self.width, self.TOP_H + 96, "LIMPA O BICO ANTES DE CONTINUAR!",
-            COL_WARN, COL_BG, 1))
-        for (x, y, w, h, kind) in self._nivelar_btns():
-            if kind == 'yes':
-                bg, lab = COL_OK, "INICIAR"
+        running = self._mesh_run > 0
+        for (x, y, w, h, kind) in self._mesh_btns():
+            if kind == 'start':
+                icon = 'play48'
+                if running:
+                    lab, fg, bg = "INICIAR", COL_DIM, self.gui_btn_bg
+                else:
+                    lab, fg, bg = "INICIAR", COL_WHITE, COL_OK
             else:
-                bg, lab = self.gui_btn_bg, "CANCELAR"
+                icon = 'x48'
+                if running:
+                    lab = "CONFIRMAR" if armed else "ABORTAR"
+                    fg, bg = COL_WHITE, COL_ERR
+                else:
+                    lab, fg, bg = "CANCELAR", COL_WHITE, self.gui_btn_bg
             ops.append(lambda x=x, y=y, w=w, h=h, bg=bg: self._gui_round(
                 x, y, w, h, bg))
-            tx = x + max(0, (w - len(lab) * 24) // 2)
-            ty = y + max(0, (h - 42) // 2)
-            ops.append(lambda tx=tx, ty=ty, lab=lab, bg=bg:
-                       self._gui_text(tx, ty, lab, COL_WHITE, bg, 3))
+            ops.append(lambda x=x, y=y, w=w, icon=icon, fg=fg, bg=bg:
+                       self._gui_icon_at(icon, x + (w - 44) // 2, y + 8,
+                                         fg, bg, 44))
+            ops.append(lambda x=x, y=y, w=w, h=h, lab=lab, fg=fg, bg=bg:
+                       self._gui_text_center(x, w, y + h - 26, lab, fg, bg, 1))
+
+    def _mesh_btns(self):
+        bw, bh = 104, 88
+        y = self.TOP_H + 128
+        x0 = self.width - 2 * bw - 20
+        return [(x0, y, bw, bh, 'start'), (x0 + bw + 12, y, bw, bh, 'cancel')]
 
     # --- inline adjustment panel (drawn where the info tiles are) --------
     def _baby_load(self):
@@ -1845,12 +1836,9 @@ class ST7796:
         if not ops:
             self._gui_ops = None
             return reactor.NEVER
-        if self._disp_quiet(eventtime) and not (
-                self._mesh_draw and not self._homing
-                and not self._gui_action_active):
+        if self._disp_quiet(eventtime) and not self._mesh_can_draw():
             # Homing/moving started mid-redraw: drop it and redraw when idle.
             self._gui_ops = None
-            self._mesh_draw = False
             self._gui_defer(eventtime, 0.4)
             return reactor.NEVER
         t0 = reactor.monotonic()
@@ -1865,18 +1853,24 @@ class ST7796:
                 return reactor.NEVER
             if reactor.monotonic() - t0 >= 0.010:
                 break
-            if self._mesh_draw and self._homing:
+            if self.gui_screen == 'mesh' and self._mesh_run > 0 \
+                    and self._homing:
                 # a probe move just started: stop the map update instantly
                 self._gui_ops = None
-                self._mesh_draw = False
                 return reactor.NEVER
         if ops:
             reactor.register_callback(self._gui_drain)
         else:
             self._gui_ops = None
-            self._mesh_draw = False
             self._ui_live_t = reactor.monotonic()
         return reactor.NEVER
+    def _mesh_can_draw(self):
+        # The leveling screen keeps refreshing while G29 runs (heating, and the
+        # travels between probe points). It still goes completely silent for the
+        # probe moves themselves (_homing) - that is where trsync is critical.
+        return (bool(self.gui) and self.gui_screen == 'mesh'
+                and self._mesh_run > 0 and not self._homing)
+
     def _gui_defer(self, eventtime, delay=0.2):
         t = eventtime + delay
         if self._gui_pending is None or t < self._gui_pending:
@@ -1904,7 +1898,7 @@ class ST7796:
         # with "Timer too close". Printing has a deep move buffer, so redraws are
         # allowed then - but a G28/G29 inside a print still sets _homing.
         if self._gui_action_active:
-            return True
+            return not self._mesh_can_draw()
         if self._homing:
             if eventtime - self._homing_t > 300.:   # safety: stale counter
                 self._homing = 0
@@ -2147,13 +2141,9 @@ class ST7796:
                 self._btn_ops(ops, x, y, w, h, 'x48', "Cancelar", COL_ERR,
                               accent=acc)
     def _gui_render(self, eventtime):
-        self._mesh_draw = bool(self.gui and self.gui_screen == 'mesh')
         if self._gui_ops:
             return
-        if self._disp_quiet(eventtime) and not (
-                self._mesh_draw and not self._homing
-                and not self._gui_action_active):
-            self._mesh_draw = False
+        if self._disp_quiet(eventtime) and not self._mesh_can_draw():
             self._gui_defer(eventtime)
             return
         # Split the background into strips: a single full-screen tft_rect blocks
@@ -2188,8 +2178,6 @@ class ST7796:
             self._estop_view_ops(ops, eventtime)
         elif self.gui_screen == 'mesh':
             self._mesh_view_ops(ops, eventtime)
-        elif self.gui_screen == 'nivelar':
-            self._nivelar_view_ops(ops, eventtime)
         g = self.gui_btn_gap
         i2 = g // 2
         for (x, y, w, h, idx, item) in self._gui_buttons():
@@ -2628,6 +2616,9 @@ class ST7796:
                 if action[1] == self.gui_screen:
                     return
             self.gui_screen = action[1]
+            if action[1] == 'mesh':
+                self._mesh_done = -1
+                self._mesh_arm = 0.
             self._gui_render(eventtime)
         elif isinstance(action, tuple) and action[0] == 'step':
             i = self._gui_steps.index(self._gui_step)
@@ -2822,33 +2813,38 @@ class ST7796:
                         self._gui_do(('tune', k, 1 if step > 0 else -1),
                                      eventtime)
                         return
-        if self.gui_screen == 'nivelar':
-            for (x, y, w, h, kind) in self._nivelar_btns():
-                if x <= sx < x + w and y <= sy < y + h:
-                    self.gcode.respond_info("GUI nivelar: %s" % kind)
-                    if kind == 'yes':
-                        self._gui_do('G29', eventtime)
-                    else:
-                        self._gui_do(('scr', 'print'), eventtime)
-                    return
         if self.gui_screen == 'mesh':
-            bx, by, bw, bh = self._mesh_abort_btn()
-            if bx <= sx < bx + bw and by <= sy < by + bh:
+            for (x, y, w, h, kind) in self._mesh_btns():
+                if not (x <= sx < x + w and y <= sy < y + h):
+                    continue
+                running = self._mesh_run > 0
                 now = self.printer.get_reactor().monotonic()
-                if now < self._mesh_arm:
-                    self.gcode.respond_info(
-                        "GUI: ABORTAR nivelamento (M112 - FIRMWARE_RESTART)")
-                    self._gui_msg = "Nivelamento abortado (M112)"
-                    self._gui_msg_until = now + 15.
-                    self._mesh_arm = 0.
-                    self._gui_run_action("M112")
+                if kind == 'start':
+                    if running:
+                        self.gcode.respond_info(
+                            "GUI: nivelamento em curso - INICIAR desligado")
+                        return
+                    self.gcode.respond_info("GUI nivelar: INICIAR")
+                    self._gui_do('G29', eventtime)
+                    return
+                if running:
+                    # The printer has no native abort: two taps -> M112.
+                    if now < self._mesh_arm:
+                        self.gcode.respond_info(
+                            "GUI: ABORTAR nivelamento (M112 - FIRMWARE_RESTART)")
+                        self._gui_msg = "Nivelamento abortado (M112)"
+                        self._gui_msg_until = now + 15.
+                        self._mesh_arm = 0.
+                        self._gui_run_action("M112")
+                    else:
+                        self._mesh_arm = now + 5.
+                        self.gcode.respond_info("GUI: ABORTAR? toca outra vez")
+                        self._gui_msg = "Toca outra vez para ABORTAR (M112)"
+                        self._gui_msg_until = now + 6.
+                        self._gui_render(now)
                 else:
-                    # First tap only arms it - the abort stops the printer.
-                    self._mesh_arm = now + 5.
-                    self.gcode.respond_info("GUI: ABORTAR? toca outra vez")
-                    self._gui_msg = "Toca outra vez para ABORTAR (M112)"
-                    self._gui_msg_until = now + 6.
-                    self._gui_render(now)
+                    self.gcode.respond_info("GUI nivelar: CANCELAR")
+                    self._gui_do(('scr', 'print'), eventtime)
                 return
         if self.gui_screen == 'network':
             for (x, y, w, h, idx, item) in self._gui_buttons():
