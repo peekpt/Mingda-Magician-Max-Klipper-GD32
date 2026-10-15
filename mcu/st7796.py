@@ -87,8 +87,12 @@ GUI_SCREENS = {
         ("Bico 200", "fire", 'M104 S200'),
         ("Bico 240", "fire", 'M104 S240'),
         ("E 1mm", "extrude", ('ext',)),
+        ("Mais...", "right", ('scr', 'extrude2')),
+    ],
+    'extrude2': [
         ("Avançadas", "cog", ('scr', 'advanced')),
-        ("Voltar", "back", ('scr', 'main')),
+        None, None, None, None, None, None,
+        ("Voltar", "back", ('scr', 'extrude')),
     ],
     'probe': [
         ("Calibrar", "probe", 'PROBE_CALIBRATE'),
@@ -131,8 +135,12 @@ GUI_SCREENS = {
         ("Rede", "network", ('scr', 'network')),
         ("Beep", "alert", ('beep',)),
         ("Motores OFF", "power", 'M84'),
+        ("Mais...", "right", ('scr', 'more2')),
+    ],
+    'more2': [
         ("Limites", "limits", ('scr', 'limits')),
-        ("Voltar", "back", ('scr', 'main')),
+        None, None, None, None, None, None,
+        ("Voltar", "back", ('scr', 'more')),
     ],
 }
 
@@ -144,8 +152,8 @@ GUI_STRIP = {
 }
 
 # Screens whose button grid is not the default 4 columns x 2 rows
-GUI_ROWS = {'print': 2, 'extrude': 3, 'more': 3}
-GUI_COLS = {'extrude': 3, 'more': 3}
+GUI_ROWS = {'print': 2}
+GUI_COLS = {}
 
 # Advanced (extruder) and machine limit screens: POPUP_ITEMS keys per card.
 ADV_KEYS = ('pa', 'smooth', 'shx', 'shy')
@@ -218,7 +226,8 @@ POPUP_ITEMS = {
 GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filamento',
               'estop': 'Confirmar', 'mesh': 'Nivelar',
               'meshadj': 'Ajustar', 'advanced': 'Avançadas',
-              'limits': 'Limites'}
+              'limits': 'Limites', 'more2': 'Mais 2/2',
+              'extrude2': 'Extruder 2/2'}
 
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
 ICON = 0x100
@@ -1310,7 +1319,8 @@ class ST7796:
         return out
     def _gui_rail(self):
         back = {'meshadj': 'mesh', 'advanced': 'extrude',
-                'limits': 'more'}.get(self.gui_screen)
+                'limits': 'more', 'more2': 'more',
+                'extrude2': 'extrude'}.get(self.gui_screen)
         if back is None:
             back = ('scr', 'print') if self.gui_screen in ('ptune',
                                                            'filament') \
