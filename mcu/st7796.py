@@ -15,6 +15,7 @@ import threading
 import time
 import urllib.request
 from . import tft_icons
+from . import tft_thumb
 
 TextGlyphs = {'right_arrow': b'\x1a', 'degrees': b'\xf8'}
 
@@ -377,6 +378,13 @@ class ST7796:
         self._mesh_lbr = None
         # ETA (time to finish) smoothing
         self._eta_hist = []
+        # Object preview (slicer thumbnail)
+        self._prev_bits = None
+        self._prev_key = 0
+        self._prev_file = None
+        self._prev_until = 0.
+        self._prev_toggle = False
+        self._prev_pending = False
         # Auto recovery after the board reboots (SD firmware update)
         self._mcu_file = os.path.expanduser(
             '~/printer_data/config/.mcu_recover')
@@ -592,6 +600,7 @@ class ST7796:
         self.cmd_tcfg = self.mcu.try_lookup_command(
             "tft_touch_cfg threshold=%hu period=%hu")
         self.cmd_splash = self.mcu.try_lookup_command("tft_splash")
+        self.cmd_ireset = self.mcu.try_lookup_command("tft_ireset")
         if None in (self.cmd_cmd, self.cmd_data, self.cmd_rect, self.cmd_char):
             logging.info("st7796: MCU has no tft_* commands (flash the display"
                          " firmware); display disabled for now")
@@ -954,9 +963,14 @@ class ST7796:
                 self.gui_screen = 'print'
                 self._gui_defer(eventtime, 0.05)
                 self._baby_apply_saved()
+                self._preview_start(eventtime)
         if eventtime >= self._gui_next:
             self._gui_next = eventtime + 0.5
             self._gui_bars(eventtime)
+        if self._prev_pending and self._prev_bits is not None:
+            self._prev_pending = False
+            self._preview_drop_cache()
+            self._gui_defer(eventtime, 0.05)
         if (self.gui and self.gui_screen == 'mesh' and not self._gui_ops
                 and eventtime >= self._mesh_t):
             # Leveling screen: only redraw what changed (temperatures / probe
@@ -2015,6 +2029,114 @@ class ST7796:
             return True
         return False
 
+    # --- object preview (slicer thumbnail) ---------------------------------
+    PREVIEW_SIZE = 168
+    PREVIEW_SHOW_S = 8.
+
+    def _sdcard_path(self):
+        try:
+            p = self.printer.lookup_object(
+                'virtual_sdcard').get_status(0).get('file_path')
+            return p if p and os.path.exists(p) else None
+        except Exception:
+            return None
+
+    def _preview_start(self, eventtime):
+        # A print (re)started: decode the thumbnail in the background.
+        path = self._sdcard_path()
+        if not path or path == self._prev_file:
+            return
+        self._prev_file = path
+        self._prev_bits = None
+        self._prev_toggle = False
+        self._prev_until = eventtime + self.PREVIEW_SHOW_S
+        try:
+            threading.Thread(target=self._preview_worker, args=(path,),
+                             daemon=True).start()
+            logging.info("st7796: preview de %s a ser preparado",
+                         os.path.basename(path))
+        except Exception:
+            logging.exception("st7796: nao consegui lancar o preview")
+
+    def _preview_worker(self, path):
+        try:
+            bw, bh, bits = tft_thumb.thumbnail_bitmap(path,
+                                                      self.PREVIEW_SIZE)
+        except Exception:
+            logging.exception("st7796: falha ao ler o thumbnail")
+            return
+        if not bits or bw != self.PREVIEW_SIZE:
+            logging.info("st7796: %s sem thumbnail utilizavel",
+                         os.path.basename(path))
+            return
+        try:
+            st = os.stat(path)
+            key = (os.path.basename(path), int(st.st_mtime), int(st.st_size))
+        except Exception:
+            key = (path, 0, 0)
+        self._prev_bits = (bits, bw, bh)
+        self._prev_pending = True
+        self._prev_key = hash(key) & 0x7FFFFFFF
+        logging.info("st7796: preview pronto (%dx%d)", bw, bh)
+
+    def _preview_drop_cache(self):
+        # A new preview means the MCU icon pool must be reset, otherwise the
+        # per-preview bitmaps pile up (the pool is only 24 KiB).
+        if self.cmd_ireset is None:
+            return
+        try:
+            self.cmd_ireset.send([])
+            self._ic_ids = {}
+            self._ic_bytes = 0
+        except Exception:
+            logging.exception("st7796: tft_ireset falhou")
+
+    def _preview_active(self, eventtime):
+        if not self._prev_bits:
+            return False
+        if self._prev_toggle:
+            return True
+        return 0. < self._prev_until and eventtime < self._prev_until
+
+    def _preview_rect(self):
+        x = self.RAIL_W + 24
+        return (x, self.TOP_H + 8, self.PREVIEW_SIZE, self.PREVIEW_SIZE)
+
+    def _preview_view_ops(self, ops, eventtime):
+        x, y, w, h = self._preview_rect()
+        bits, bw, bh = self._prev_bits
+        ops.append(lambda x=x, y=y, w=w, h=h: self.cmd_rect.send(
+            [x, y, w, h, COL_BG]))
+        bx = x + max(0, (w - bw) // 2)
+        by = y + max(0, (h - bh) // 2)
+        ops.append(lambda bx=bx, by=by, bits=bits, bw=bw, bh=bh:
+                   self._bmp_at((bw, bh, bits), bx, by, COL_WHITE, COL_BG,
+                                ('prev', self._prev_key)))
+        ps = self._print_status(eventtime) or {}
+        tx = x + w + 14
+        fname = os.path.basename(ps.get('filename') or '-')
+        ops.append(lambda tx=tx, y=y, fname=fname: self._gui_text(
+            tx, y + 8, (fname + ' ' * 16)[:16], COL_WHITE, COL_BG, 1))
+        info = ps.get('info') or {}
+        lay, tot = info.get('current_layer'), info.get('total_layer')
+        if lay:
+            ops.append(lambda tx=tx, y=y, lay=lay, tot=tot: self._gui_text(
+                tx, y + 34, "CAMADA %s/%s" % (lay, tot or '?'), COL_C3,
+                COL_BG, 1))
+        dur = ps.get('print_duration') or 0
+        ops.append(lambda tx=tx, y=y, dur=dur: self._gui_text(
+            tx, y + 54, "DECORRIDO %d:%02d" % (dur // 3600,
+                                               (dur // 60) % 60),
+            COL_ACTIVE, COL_BG, 1))
+        left = self._eta_left(eventtime)
+        if left is not None:
+            ops.append(lambda tx=tx, y=y, left=left: self._gui_text(
+                tx, y + 74, "FALTA %d:%02d" % (int(left) // 3600,
+                                               (int(left) // 60) % 60),
+                COL_WARN, COL_BG, 1))
+        ops.append(lambda tx=tx, y=y, h=h: self._gui_text(
+            tx, y + h - 20, "toca p/ fechar", COL_DIM, COL_BG, 1))
+
     # --- Avancadas / Limites: 2x2 cards + GRAVAR ---------------------------
     def _card_rects(self):
         x0, y0 = self.RAIL_W + 8, self.TOP_H + 8
@@ -2812,6 +2934,8 @@ class ST7796:
         if self._popup is not None:
             # adjustment panel drawn where the info tiles normally are
             self._popup_view_ops(ops, eventtime)
+        elif self._preview_active(eventtime):
+            self._preview_view_ops(ops, eventtime)
         else:
             for (tx, ty, tw, th, i, k) in self._print_panel():
                 val, col = self._panel_value(k, eventtime)
@@ -3611,6 +3735,18 @@ class ST7796:
             if self._print_view(eventtime):
                 ps = self._print_status(eventtime) or {}
                 paused = ps.get('state') == 'paused'
+                # object preview: the image itself or the progress bar row
+                # toggles it (the bar row is not used for anything else)
+                if self._prev_bits:
+                    px, py, pw, ph = self._preview_rect()
+                    on_img = (px <= sx < px + pw and py <= sy < py + ph)
+                    on_bar = (self.RAIL_W <= sx < 300
+                              and self.TOP_H + 170 <= sy < self.TOP_H + 200)
+                    if on_img or on_bar:
+                        self._prev_toggle = not self._prev_toggle
+                        self._prev_until = 0.
+                        self._gui_render(eventtime)
+                        return
                 if self._popup is not None:
                     if self._popup_tap(sx, sy, eventtime):
                         return

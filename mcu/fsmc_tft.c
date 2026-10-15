@@ -544,6 +544,16 @@ tft_splash(void)
         TFT_RAM = splash_pal[SPLASH_BG];
 }
 
+// tft_ireset            (no arguments) - drop every cached bitmap
+void
+command_tft_ireset(uint32_t *args)
+{
+    icon_used = 0;
+    memset(icon_w, 0, sizeof(icon_w));
+    memset(icon_h, 0, sizeof(icon_h));
+}
+DECL_COMMAND(command_tft_ireset, "tft_ireset");
+
 // tft_splash            (no arguments)
 void
 command_tft_splash(uint32_t *args)
