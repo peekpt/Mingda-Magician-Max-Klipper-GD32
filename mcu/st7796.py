@@ -167,7 +167,8 @@ POPUP_ITEMS = {
 
 # Friendly titles for the top bar (otherwise the screen id is shown)
 GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filamento',
-              'estop': 'Confirmar', 'mesh': 'Nivelar'}
+              'estop': 'Confirmar', 'mesh': 'Nivelar',
+              'meshadj': 'Ajustar'}
 
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
 ICON = 0x100
@@ -325,6 +326,19 @@ class ST7796:
         self._mesh_ldone = 0x7FFFFFFF
         self._mesh_ltv = None
         self._mesh_lbr = None
+        # Manual mesh point adjustment
+        self._adj_orig = []
+        self._adj_cur = []
+        self._adj_i = 0
+        self._adj_j = 0
+        self._adj_delta = 0.
+        self._adj_at = False
+        self._adj_step_i = 1
+        self._adj_lstate = None
+        self._adj_lval = None
+        self._adj_lpt = None
+        self._adj_lstep = None
+        self._adj_lsave = None
         self._mesh_hook()
         # Touch (XPT2046)
         self.gcode = gcode
@@ -793,6 +807,9 @@ class ST7796:
         if not self.gui:
             return
         scr = gcmd.get('SCREEN', None)
+        if scr == 'meshadj':
+            self._adj_open(self.printer.get_reactor().monotonic())
+            return
         if scr:
             self.gui_screen = scr
         self._gui_pending = self.printer.get_reactor().monotonic()
@@ -829,7 +846,10 @@ class ST7796:
         if self._gui_pending is not None:
             if eventtime >= self._gui_pending:
                 self._gui_pending = None
-                self._gui_render(eventtime)
+                if self.gui and self.gui_screen == 'meshadj':
+                    self._adj_update(eventtime)
+                else:
+                    self._gui_render(eventtime)
         if self.query_touch is None:
             return eventtime + 0.2
         if self._touch_evt:
@@ -986,6 +1006,10 @@ class ST7796:
     STRIP_H = 34
     MESH_X0 = RAIL_W + 14
     MESH_Y0 = TOP_H + 16
+    ADJ_X0 = 288      # manual mesh adjustment: grid centroid
+    ADJ_Y0 = 66
+    ADJ_SPAN = 156
+    ADJ_STEPS = (0.005, 0.01, 0.1)
     def _gc(self, i):
         return GUI_COLORS[i % len(GUI_COLORS)]
     def _gui_text(self, x, y, text, fg, bg, scale=1):
@@ -1207,7 +1231,7 @@ class ST7796:
         return out
     def _gui_rail(self):
         back = ('scr', 'print') if self.gui_screen in ('ptune', 'filament') \
-            else ('scr', 'main')
+            else ('scr', 'mesh' if self.gui_screen == 'meshadj' else 'main')
         items = [('back24', back), ('home24', ('scr', 'main')),
                  ('files24', ('scr', 'print')), ('alert24', ('scr', 'power'))]
         n = len(items)
@@ -1435,11 +1459,12 @@ class ST7796:
             return None
         return float(pos[0]), float(pos[1])
 
-    def _mesh_pts(self, mn, mx, cx, cy):
+    def _mesh_pts(self, mn, mx, cx, cy, x0=None, y0=None, span=None):
         # [(screen_x, screen_y, probe index, col, row)] - the probe order is
         # serpentine, the on-screen layout is the plain grid.
-        x0, y0 = self.MESH_X0, self.MESH_Y0
-        span = 60 * (max(cx, cy) - 1) + 16
+        x0 = self.MESH_X0 if x0 is None else x0
+        y0 = self.MESH_Y0 if y0 is None else y0
+        span = 60 * (max(cx, cy) - 1) + 16 if span is None else span
         out = []
         for j in range(cy):
             for m in range(cx):
@@ -1510,7 +1535,7 @@ class ST7796:
             return
         tx = self.width - 202
         for k, (icon, (lbl, col)) in enumerate(zip(('nozzle', 'bed'), tv)):
-            ty = self.TOP_H + 58 + k * 44
+            ty = self.TOP_H + 44 + k * 36
             ico = self._icon_at(icon, 22)
             ops.append(lambda tx=tx, ty=ty: self.cmd_rect.send(
                 [tx, ty, 104, 24, COL_BG]))
@@ -1522,13 +1547,27 @@ class ST7796:
 
     def _mesh_btns(self):
         bw, bh = 104, 88
-        y = self.TOP_H + 128
+        y = self.TOP_H + 156
         x0 = self.width - 2 * bw - 20
         return [(x0, y, bw, bh, 'start'), (x0 + bw + 12, y, bw, bh, 'cancel')]
+
+    def _mesh_adj_btn(self):
+        return (self.width - 228, self.TOP_H + 108, 220, 42)
 
     def _mesh_btn_ops(self, ops, eventtime):
         running = self._mesh_run > 0
         armed = running and eventtime < self._mesh_arm
+        # manual point adjustment (only when the printer is not leveling)
+        ax, ay, aw, ah = self._mesh_adj_btn()
+        alab, afg, abg = (("AJUSTAR", COL_DIM, self.gui_btn_bg) if running
+                          else ("AJUSTAR", COL_WHITE, self.gui_btn_bg))
+        ops.append(lambda ax=ax, ay=ay, aw=aw, ah=ah, abg=abg:
+                   self._gui_round(ax, ay, aw, ah, abg))
+        ops.append(lambda ax=ax, ay=ay, aw=aw, afg=afg, abg=abg:
+                   self._gui_icon_at('cog', ax + 12, ay + 7, afg, abg, 28))
+        ops.append(lambda ax=ax, ay=ay, aw=aw, ah=ah, alab=alab, afg=afg,
+                   abg=abg: self._gui_text_center(
+                       ax, aw, ay + (ah - 16) // 2, alab, afg, abg, 1))
         for (x, y, w, h, kind) in self._mesh_btns():
             if kind == 'start':
                 icon = 'play48'
@@ -1618,6 +1657,270 @@ class ST7796:
         self._mesh_lmk, self._mesh_ldone = mk, done
         if ops:
             self._gui_enqueue(ops)
+
+    # --- manual mesh point adjustment -------------------------------------
+    def _adj_geo(self):
+        m = self._adj_cur
+        if not m or not m[0]:
+            return 0, 0
+        return len(m[0]), len(m)
+
+    def _adj_pts(self):
+        cols, rows = self._adj_geo()
+        _, _, cx, cy = self._mesh_geo()
+        cx_n, cy_n = cols or cx, rows or cy
+        out = []
+        for j in range(cy_n):
+            for i in range(cx_n):
+                sx = self.ADJ_X0 + int(i * self.ADJ_SPAN / max(1, cx_n - 1))
+                sy = self.ADJ_Y0 + int((cy_n - 1 - j) * self.ADJ_SPAN
+                                       / max(1, cy_n - 1))
+                out.append((sx, sy, i, j))
+        return out
+
+    def _adj_xy(self, i, j):
+        cols, rows = self._adj_geo()
+        mn, mx, cx, cy = self._mesh_geo()
+        cx_n, cy_n = cols or cx, rows or cy
+        return (mn[0] + (mx[0] - mn[0]) * i / max(1, cx_n - 1),
+                mn[1] + (mx[1] - mn[1]) * j / max(1, cy_n - 1))
+
+    def _adj_mesh(self):
+        try:
+            bm = self.printer.lookup_object('bed_mesh')
+            return bm, bm.get_mesh()
+        except Exception:
+            return None, None
+
+    def _adj_dirty(self):
+        for j, row in enumerate(self._adj_cur):
+            for i, v in enumerate(row):
+                if abs(v - self._adj_orig[j][i]) > 1e-9:
+                    return True
+        return False
+
+    def _adj_open(self, eventtime):
+        _, mesh = self._adj_mesh()
+        try:
+            m = mesh.get_probed_matrix() if mesh is not None else None
+        except Exception:
+            m = None
+        if not m or not m[0]:
+            self._gui_warn("Sem malha da cama - faz Nivelar primeiro")
+            return
+        self._adj_orig = [list(r) for r in m]
+        self._adj_cur = [list(r) for r in m]
+        cols, rows = self._adj_geo()
+        self._adj_i, self._adj_j = (cols - 1) // 2, (rows - 1) // 2
+        self._adj_delta = 0.
+        self._adj_at = False
+        self._adj_forget()
+        self.gui_screen = 'meshadj'
+        self.gcode.respond_info("GUI ajuste da malha %dx%d (ponto %d,%d)"
+                                % (cols, rows, self._adj_i + 1,
+                                   self._adj_j + 1))
+        self._gui_render(eventtime)
+
+    def _adj_forget(self):
+        self._adj_lstate = None
+        self._adj_lval = None
+        self._adj_lstep = None
+        self._adj_lsave = None
+
+    def _adj_apply(self):
+        bm, mesh = self._adj_mesh()
+        if mesh is None:
+            return
+        try:
+            mesh.build_mesh([list(r) for r in self._adj_cur])
+            bm.set_mesh(mesh)
+        except Exception:
+            logging.exception("st7796: falha ao aplicar o ajuste da malha")
+
+    def _adj_move(self, i, j, eventtime):
+        self._adj_i, self._adj_j = i, j
+        self._adj_delta = self._adj_cur[j][i] - self._adj_orig[j][i]
+        x, y = self._adj_xy(i, j)
+        self._adj_at = True
+        # Up, over, then down to the mesh surface for that point.
+        self.gcode.respond_info("GUI ajuste: ponto %d,%d -> X%.1f Y%.1f"
+                                % (i + 1, j + 1, x, y))
+        self._gui_run_action(
+            "G90\nG1 Z3 F600\nG1 X%.2f Y%.2f F3000\nG1 Z0 F150" % (x, y))
+        self._adj_forget()
+
+    def _adj_nudge(self, sign, eventtime):
+        if not self._adj_at:
+            self._gui_warn("Toca primeiro num ponto da grelha")
+            return
+        step = self.ADJ_STEPS[self._adj_step_i] * sign
+        j, i = self._adj_j, self._adj_i
+        d = max(-1.0, min(1.0, self._adj_delta + step))
+        if abs(d - self._adj_delta) < 1e-9:
+            self._gui_warn("Limite do ajuste (+/-1.0mm)")
+            return
+        self._adj_delta = d
+        self._adj_cur[j][i] = self._adj_orig[j][i] + d
+        self._adj_apply()
+        self.gcode.respond_info("GUI ajuste (%d,%d) %+.3f" % (i + 1, j + 1, d))
+        # Re-issue Z0: the nozzle moves by exactly the correction.
+        self._gui_run_action("G1 Z0 F180")
+        self._adj_forget()
+
+    def _adj_save(self, eventtime):
+        if not self._adj_dirty():
+            self._gui_warn("Nada para gravar")
+            return
+        self._gui_msg = "A gravar a malha da cama (SAVE_CONFIG)..."
+        self._gui_msg_until = self.printer.get_reactor().monotonic() + 60.
+        self.gcode.respond_info("GUI: gravar a malha ajustada")
+        self._gui_run_action("BED_MESH_PROFILE SAVE=default\nSAVE_CONFIG")
+        self._adj_forget()
+
+    def _adj_point_ops(self, ops, sx, sy, i, j, sel):
+        ops.append(lambda sx=sx, sy=sy: self.cmd_rect.send(
+            [sx - 22, sy - 22, 44, 44, COL_BG]))
+        adj = abs(self._adj_cur[j][i] - self._adj_orig[j][i]) > 1e-9
+        if sel:
+            ops.append(lambda sx=sx, sy=sy: self._bmp_at(
+                EXTRA_ICONS['dot22'], sx - 11, sy - 11, COL_WHITE, COL_BG,
+                ('dot22', 0)))
+            ops.append(lambda sx=sx, sy=sy: self.cmd_rect.send(
+                [sx - 5, sy - 5, 10, 10, 0x0000]))
+        elif adj:
+            ops.append(lambda sx=sx, sy=sy: self._bmp_at(
+                EXTRA_ICONS['dot16'], sx - 8, sy - 8, COL_ERR, COL_BG,
+                ('dot16', 0)))
+        else:
+            ops.append(lambda sx=sx, sy=sy: self._bmp_at(
+                EXTRA_ICONS['ring16'], sx - 8, sy - 8, COL_ACTIVE, COL_BG,
+                ('ring16', 0)))
+
+    def _adj_state(self):
+        st = {}
+        if not self._adj_cur or not self._adj_cur[0]:
+            return st
+        for (sx, sy, i, j) in self._adj_pts():
+            if i == self._adj_i and j == self._adj_j:
+                st[(i, j)] = 'sel'
+            elif abs(self._adj_cur[j][i] - self._adj_orig[j][i]) > 1e-9:
+                st[(i, j)] = 'adj'
+            else:
+                st[(i, j)] = 'plain'
+        return st
+
+    def _adj_info_ops(self, ops):
+        x, y = self._adj_xy(self._adj_i, self._adj_j)
+        ops.append(lambda: self.cmd_rect.send([36, 30, 212, 114, COL_BG]))
+        ops.append(lambda: self._gui_text(42, 34, "AJUSTE", COL_ACTIVE,
+                                          COL_BG, 1))
+        ops.append(lambda: self._gui_text(
+            42, 52, "PONTO %d,%d" % (self._adj_i + 1, self._adj_j + 1),
+            COL_WHITE, COL_BG, 1))
+        ops.append(lambda x=x, y=y: self._gui_text(
+            42, 68, "X%.0f  Y%.0f" % (x, y), COL_ACTIVE, COL_BG, 1))
+        lab = "%+.3f" % self._adj_delta
+        col = COL_OK if abs(self._adj_delta) < 1e-9 else COL_WARN
+        ops.append(lambda lab=lab, col=col: self._gui_text(
+            42, 90, lab, col, COL_BG, 3))
+        self._adj_lval = (self._adj_i, self._adj_j, self._adj_delta)
+
+    def _adj_pm_ops(self, ops):
+        ops.append(lambda: self._gui_text(42, 208, "PASSO", COL_ACTIVE,
+                                          COL_BG, 1))
+        for (x, icon) in ((40, 'down'), (144, 'up')):
+            bg = self.gui_btn_bg
+            ops.append(lambda x=x, bg=bg: self._gui_round(x, 146, 96, 52, bg))
+            iw = (self._icon_at(icon, 34) or (0, 0))[0]
+            ops.append(lambda x=x, icon=icon, iw=iw, bg=bg:
+                       self._gui_icon_at(icon, x + (96 - iw) // 2, 155,
+                                         COL_WHITE, bg, 34))
+
+    def _adj_step_ops(self, ops):
+        for k, val in enumerate(self.ADJ_STEPS):
+            x = 40 + k * 70
+            sel = (k == self._adj_step_i)
+            bg = self.gui_btn_bg
+            fg = COL_WHITE if sel else COL_ACTIVE
+            lab = "%g" % val
+            ops.append(lambda x=x, bg=bg: self._gui_round(x, 224, 66, 44, bg))
+            ops.append(lambda x=x, lab=lab, fg=fg, bg=bg:
+                       self._gui_text_center(x, 66, 238, lab, fg, bg, 1))
+            if sel:
+                ops.append(lambda x=x: self.cmd_rect.send(
+                    [x + 6, 260, 54, 4, COL_OK]))
+        self._adj_lstep = self._adj_step_i
+
+    def _adj_save_ops(self, ops):
+        x, y, w, h = 256, 244, 214, 36
+        dirty = self._adj_dirty()
+        bg = COL_OK if dirty else self.gui_btn_bg
+        fg = COL_WHITE if dirty else COL_DIM
+        iw = (self._icon_at('save', 24) or (0, 0))[0]
+        ops.append(lambda x=x, y=y, w=w, h=h, bg=bg: self._gui_round(
+            x, y, w, h, bg))
+        ops.append(lambda x=x, y=y, iw=iw, fg=fg, bg=bg: self._gui_icon_at(
+            'save', x + 16, y + 6, fg, bg, 24))
+        ops.append(lambda x=x, y=y, fg=fg, bg=bg: self._gui_text(
+            x + 52, y + 10, "GRAVAR", fg, bg, 1))
+        self._adj_lsave = dirty
+
+    def _adj_view_ops(self, ops, eventtime):
+        st = self._adj_state()
+        for (sx, sy, i, j) in self._adj_pts():
+            self._adj_point_ops(ops, sx, sy, i, j, st[(i, j)] == 'sel')
+        self._adj_info_ops(ops)
+        self._adj_pm_ops(ops)
+        self._adj_step_ops(ops)
+        self._adj_save_ops(ops)
+        self._adj_lstate = st
+
+    def _adj_update(self, eventtime):
+        # only redraw what changed - a full repaint would flicker
+        ops = []
+        st = self._adj_state()
+        old = self._adj_lstate or {}
+        for (sx, sy, i, j) in self._adj_pts():
+            if old.get((i, j)) != st[(i, j)]:
+                self._adj_point_ops(ops, sx, sy, i, j, st[(i, j)] == 'sel')
+        if (self._adj_i, self._adj_j, self._adj_delta) != self._adj_lval:
+            self._adj_info_ops(ops)
+        if self._adj_lstep != self._adj_step_i:
+            self._adj_step_ops(ops)
+        if self._adj_lsave != self._adj_dirty():
+            self._adj_save_ops(ops)
+        self._adj_lstate = st
+        if ops:
+            self._gui_enqueue(ops)
+
+    def _adj_tap(self, sx, sy, eventtime):
+        if not self._adj_cur or not self._adj_cur[0]:
+            return False
+        best = None
+        for (px, py, i, j) in self._adj_pts():
+            d = max(abs(sx - px), abs(sy - py))
+            if d <= 22 and (best is None or d < best[0]):
+                best = (d, i, j)
+        if best is not None:
+            self._adj_move(best[1], best[2], eventtime)
+            return True
+        if 40 <= sx < 136 and 146 <= sy < 198:
+            self._adj_nudge(-1, eventtime)
+            return True
+        if 144 <= sx < 240 and 146 <= sy < 198:
+            self._adj_nudge(1, eventtime)
+            return True
+        for k in range(len(self.ADJ_STEPS)):
+            x = 40 + k * 70
+            if x <= sx < x + 66 and 224 <= sy < 268:
+                self._adj_step_i = k
+                self.gcode.respond_info("GUI passo %g" % self.ADJ_STEPS[k])
+                self._adj_update(eventtime)
+                return True
+        if 256 <= sx < 470 and 244 <= sy < 280:
+            self._adj_save(eventtime)
+            return True
+        return False
 
     # --- inline adjustment panel (drawn where the info tiles are) --------
     def _baby_load(self):
@@ -2297,6 +2600,8 @@ class ST7796:
             self._estop_view_ops(ops, eventtime)
         elif self.gui_screen == 'mesh':
             self._mesh_view_ops(ops, eventtime)
+        elif self.gui_screen == 'meshadj':
+            self._adj_view_ops(ops, eventtime)
         g = self.gui_btn_gap
         i2 = g // 2
         for (x, y, w, h, idx, item) in self._gui_buttons():
@@ -2933,7 +3238,19 @@ class ST7796:
                         self._gui_do(('tune', k, 1 if step > 0 else -1),
                                      eventtime)
                         return
+        if self.gui_screen == 'meshadj':
+            if self._adj_tap(sx, sy, eventtime):
+                return
         if self.gui_screen == 'mesh':
+            ax, ay, aw, ah = self._mesh_adj_btn()
+            if ax <= sx < ax + aw and ay <= sy < ay + ah:
+                if self._mesh_run > 0:
+                    self.gcode.respond_info(
+                        "GUI: nivelamento em curso - AJUSTAR desligado")
+                    return
+                self.gcode.respond_info("GUI: Ajustar pontos da malha")
+                self._adj_open(eventtime)
+                return
             for (x, y, w, h, kind) in self._mesh_btns():
                 if not (x <= sx < x + w and y <= sy < y + h):
                     continue
