@@ -3245,7 +3245,9 @@ class ST7796:
         if not script:
             return False
         if any(m in script for m in self._FEED_MACROS):
-            return True
+            # These macros heat the nozzle themselves (M109), so they are
+            # never blocked by the cold-extrusion guard.
+            return not re.search(r"\bM10[49]\b", script)
         for line in script.split('\n'):
             line = line.split(';')[0].upper().strip()
             if line.startswith('G1') and self._E_WORD_RE.search(line):
