@@ -109,11 +109,11 @@ GUI_SCREENS = {
     # 'print' is built dynamically from the virtual SD files (see _print_items)
     'print': [],
     'filament': [
-        ("Ejetar", "unload", ('fil', 'unload')),
+        ("Unload", "unload", ('fil', 'unload')),
         ("Baby", "zoffset", ('baby', 0)),
         ("0.01", "cog", ('bstep',)),
         ("Save", "save", ('bsave',)),
-        ("Inserir", "load", ('fil', 'load')),
+        ("Load", "load", ('fil', 'load')),
         ("Z +", "up", ('baby', 1)),
         ("Z -", "down", ('baby', -1)),
         ("", "", None),
@@ -224,7 +224,7 @@ GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filament',
               'estop': 'Confirm', 'mesh': 'Auto Bed Level', 'probe': 'Z-Probe',
               'meshadj': 'Adjust', 'advanced': 'Advanced',
               'limits': 'Limits', 'calibrate': 'Calibrate', 'pid': 'PID',
-              'info': 'Info'}
+              'info': 'Info', 'filout': 'Filament'}
 
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
 ICON = 0x100
@@ -541,6 +541,8 @@ class ST7796:
         self._pid_last = 0.
         self._pid_active = False
         self._pid_done = False
+        self._fil_lost = False
+        self._notice = None
         self._bstep_i = 1
         self._baby_dirty = False
         self._popup = None
@@ -979,6 +981,10 @@ class ST7796:
         if self.printer.is_shutdown():
             # No MCU session: nothing can be drawn or touched on the panel.
             return eventtime + 0.5
+        try:
+            self._fil_watch(eventtime)
+        except Exception:
+            logging.exception("st7796: filament watch failed")
         if self.gui and self._disp_quiet(eventtime):
             # Printer is homing/moving: stay off the link. During homing/probing
             # stay completely silent (trsync timing), otherwise send a tiny
@@ -1396,7 +1402,7 @@ class ST7796:
     def _gui_rail(self):
         back = {'meshadj': 'mesh', 'advanced': 'calibrate',
                 'limits': 'calibrate', 'pid': 'calibrate',
-                'info': 'more'}.get(self.gui_screen)
+                'info': 'more', 'filout': 'print'}.get(self.gui_screen)
         if back is None:
             back = ('scr', 'print') if self.gui_screen in ('ptune',
                                                            'filament') \
@@ -3199,6 +3205,8 @@ class ST7796:
             self._pid_view_ops(ops, eventtime)
         elif self.gui_screen == 'info':
             self._info_view_ops(ops, eventtime)
+        elif self.gui_screen == 'filout':
+            self._filout_view_ops(ops, eventtime)
         g = self.gui_btn_gap
         i2 = g // 2
         for (x, y, w, h, idx, item) in self._gui_buttons():
@@ -3241,6 +3249,8 @@ class ST7796:
                                            self._gc(idx)]))
         ops.append(lambda et=eventtime: self._gui_topbar(et))
         ops.append(lambda et=eventtime: self._gui_bottombar(et))
+        if getattr(self, '_notice', None):
+            self._notice_ops(ops)
         self._gui_enqueue(ops)
     def _raw_to_screen(self, rx, ry):
         if self.touch_swap:
@@ -3618,6 +3628,96 @@ class ST7796:
         ty = y + max(0, (h - 64) // 2)
         ops.append(lambda tx=tx, ty=ty, label=label, bg=bg, fg=fg:
                    self._gui_text(tx, ty, label, fg, bg, 4))
+    # --- Filament ---------------------------------------------------------
+    def _notice_ok_btn(self):
+        return ((self.width - 160) // 2, 0, 160, 42)
+    @staticmethod
+    def _wrap(text, n=44):
+        out, cur = [], ''
+        for word in str(text).split():
+            if cur and len(cur) + 1 + len(word) > n:
+                out.append(cur)
+                cur = word
+            else:
+                cur = (cur + ' ' + word) if cur else word
+        if cur:
+            out.append(cur)
+        return out
+    def _notice_ops(self, ops):
+        lines = []
+        for t in (self._notice or ()):
+            lines.extend(self._wrap(t))
+        lines = lines[:3]
+        bg = self.gui_bar_bg
+        w, h = 400, 150
+        x = (self.width - w) // 2
+        y = self.TOP_H + (self.height - self.STRIP_H - self.TOP_H - h) // 2
+        ops.append(lambda: self.cmd_rect.send(
+            [0, self.TOP_H, self.width,
+             self.height - self.TOP_H - self.STRIP_H, COL_BG]))
+        ops.append(lambda: self._gui_round(x, y, w, h, bg))
+        ops.append(lambda: self._gui_icon_at('alert', x + 14, y + 12,
+                                             COL_WARN, bg, 28))
+        for i, txt in enumerate(lines[:3]):
+            ops.append(lambda i=i, txt=txt, x=x, y=y, bg=bg:
+                       self._gui_text(x + 52, y + 14 + i * 18, txt,
+                                      COL_WHITE if i == 0 else COL_DIM,
+                                      bg, 1))
+        bx, by, bw, bh = self._notice_ok_btn()
+        by = y + h - 56
+        ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self._gui_round(
+            bx, by, bw, bh, self.gui_btn_bg))
+        ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self._gui_text_center(
+            bx, bw, by + (bh - 16) // 2, "OK", COL_WHITE, self.gui_btn_bg, 1))
+        ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self.cmd_rect.send(
+            [bx + 10, by + bh - 9, bw - 20, 5, COL_OK]))
+    def _filout_btns(self):
+        x0 = self.RAIL_W + 12
+        w = self.width - self.RAIL_W - 24
+        bw = (w - 12) // 2
+        y0 = self.TOP_H + 92
+        bh = (self.height - self.STRIP_H - y0 - 16 - 12) // 2
+        return [('unload', x0, y0, bw, bh),
+                ('load', x0 + bw + 12, y0, bw, bh),
+                ('resume', x0, y0 + bh + 12, bw, bh),
+                ('cancel', x0 + bw + 12, y0 + bh + 12, bw, bh)]
+    def _filout_view_ops(self, ops, eventtime):
+        ops.append(lambda: self._gui_icon_at(
+            'alert', self.RAIL_W + 12, self.TOP_H + 10, COL_WARN, COL_BG, 40))
+        ops.append(lambda: self._gui_text(self.RAIL_W + 60, self.TOP_H + 12,
+                                          "FILAMENT RUNOUT", COL_WARN,
+                                          COL_BG, 2))
+        ops.append(lambda: self._gui_text(self.RAIL_W + 60, self.TOP_H + 44,
+                                          "Print paused - load or unload",
+                                          COL_DIM, COL_BG, 1))
+        for (kind, x, y, w, h) in self._filout_btns():
+            icon, acc = {'unload': ('unload', COL_WARN),
+                         'load': ('load', COL_C3),
+                         'resume': ('play48', COL_OK),
+                         'cancel': ('x48', COL_ERR)}[kind]
+            self._btn_ops(ops, x, y, w, h, icon, kind.capitalize(),
+                          accent=acc)
+    def _fil_watch(self, eventtime):
+        # Runout while printing: Klipper pauses (pause_on_runout); show the
+        # panel with the load/unload choices.
+        en, det = self._filament_status(eventtime)
+        if not en or det is None:
+            return
+        if det:
+            self._fil_lost = False
+            return
+        ps = self._print_status(eventtime)
+        state = (ps or {}).get('state')
+        if state not in ('printing', 'paused'):
+            self._fil_lost = False
+            return
+        if self._fil_lost or state != 'paused':
+            return
+        self._fil_lost = True
+        self.gcode.respond_info("GUI: filament runout - showing the panel")
+        if self.gui_screen != 'filout':
+            self.gui_screen = 'filout'
+            self._gui_render(eventtime)
     # --- Info -------------------------------------------------------------
     def _info_lines(self, eventtime):
         out = [("Release", str(self.gui_version or '-'), COL_C1)]
@@ -3978,6 +4078,28 @@ class ST7796:
                 self.printer.get_reactor().monotonic() + 20.)
             self._baby_dirty = False
             script = 'Z_OFFSET_APPLY_PROBE\nSAVE_CONFIG'
+        elif isinstance(action, tuple) and action[0] == 'filo':
+            kind = action[1]
+            if kind == 'resume':
+                en, det = self._filament_status(eventtime)
+                if en and det is False:
+                    self._gui_warn("Load the filament first")
+                    return
+                self.gui_screen = 'print'
+                self._gui_render(eventtime)
+                script = 'RESUME'
+            elif kind == 'cancel':
+                self.gui_screen = 'print'
+                self._gui_render(eventtime)
+                script = 'CANCEL_PRINT'
+            elif kind == 'load':
+                self._gui_msg = "Loading filament..."
+                self._gui_msg_until = now + 120.
+                script = 'LOAD_FILAMENT'
+            else:
+                self._gui_msg = "Unloading filament..."
+                self._gui_msg_until = now + 120.
+                script = 'UNLOAD_FILAMENT'
         elif isinstance(action, tuple) and action[0] == 'fil':
             try:
                 st = self.printer.lookup_object('print_stats').get_status(
@@ -4063,6 +4185,13 @@ class ST7796:
             if state in ('printing', 'paused'):
                 self._gui_warn("Printing - cancel first")
                 return
+            en, det = self._filament_status(eventtime)
+            if en and not det:
+                self.gcode.respond_info("GUI: no filament - print blocked")
+                self._notice = ("No filament detected.",
+                                "Load it, then pick the file again.")
+                self._gui_render(eventtime)
+                return
             fname = str(action[1]).replace('"', '')
             self.gcode.respond_info("GUI print: %s" % fname)
             # Clear any stale file first: a cancelled print can leave the
@@ -4095,6 +4224,10 @@ class ST7796:
             script = "M300 S1000 P60\n" + (script or "")
         self._gui_run_action(script)
     def _gui_tap(self, rx, ry, eventtime):
+        if self._notice:
+            self._notice = None
+            self._gui_render(eventtime)
+            return
         if self._gui_action_active and self.gui_screen != 'pid':
             self.gcode.respond_info("GUI: busy - tap ignored")
             return
@@ -4189,6 +4322,12 @@ class ST7796:
                     self.gcode.respond_info("GUI nivelar: CANCELAR")
                     self._gui_do(('scr', 'print'), eventtime)
                 return
+        if self.gui_screen == 'filout':
+            for (kind, x, y, w, h) in self._filout_btns():
+                if x <= sx < x + w and y <= sy < y + h:
+                    self.gcode.respond_info("GUI filout: %s" % kind)
+                    self._gui_do(('filo', kind), eventtime)
+                    return
         if self.gui_screen == 'pid':
             for (kind, x, y, w, h) in self._pid_btns():
                 if x <= sx < x + w and y <= sy < y + h:
