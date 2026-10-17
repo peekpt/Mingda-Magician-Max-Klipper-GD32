@@ -55,10 +55,19 @@ GUI_SCREENS = {
         ("Temperature", "heatup", ('scr', 'temperature')),
         ("Extruder", "extrude", ('scr', 'extrude')),
         ("Print", "print", ('scr', 'print')),
-        ("Level", "bedmesh", ('scr', 'mesh')),
-        ("Z-Probe", "zoffset", ('scr', 'probe')),
+        ("Calibrate", "bedlevel", ('scr', 'calibrate')),
         ("More", "settings", ('scr', 'more')),
         ("Home", "home", 'G28'),
+        None,
+    ],
+    # Tuning menus that used to live in main / Extrude / More.
+    'calibrate': [
+        ("Level", "bedmesh", ('scr', 'mesh')),
+        ("Z-Probe", "zoffset", ('scr', 'probe')),
+        ("Limits", "limits", ('scr', 'limits')),
+        ("Advanced", "cog", ('scr', 'advanced')),
+        ("Back", "back", ('scr', 'main')),
+        None, None, None,
     ],
     'move': [
         ("Home All", "home", 'G28'),
@@ -88,12 +97,6 @@ GUI_SCREENS = {
         ("Nozzle 200", "fire", 'M104 S200'),
         ("Nozzle 240", "fire", 'M104 S240'),
         ("E 1mm", "extrude", ('ext',)),
-        ("More...", "right", ('scr', 'extrude2')),
-    ],
-    'extrude2': [
-        ("Advanced", "cog", ('scr', 'advanced')),
-        None, None, None, None, None, None,
-        ("Back", "back", ('scr', 'extrude')),
     ],
     # 'probe' (Z-Probe) is drawn by _probe_view_ops: see Z_STEPS below.
     'probe': [],
@@ -128,12 +131,6 @@ GUI_SCREENS = {
         ("Network", "network", ('scr', 'network')),
         ("Beep", "alert", ('beep',)),
         ("Motors OFF", "power", 'M84'),
-        ("More...", "right", ('scr', 'more2')),
-    ],
-    'more2': [
-        ("Limits", "limits", ('scr', 'limits')),
-        None, None, None, None, None, None,
-        ("Back", "back", ('scr', 'more')),
     ],
 }
 
@@ -222,8 +219,7 @@ POPUP_ITEMS = {
 GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filament',
               'estop': 'Confirm', 'mesh': 'Level', 'probe': 'Z-Probe',
               'meshadj': 'Adjust', 'advanced': 'Advanced',
-              'limits': 'Limits', 'more2': 'More 2/2',
-              'extrude2': 'Extruder 2/2'}
+              'limits': 'Limits', 'calibrate': 'Calibrate'}
 
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
 ICON = 0x100
@@ -1348,9 +1344,8 @@ class ST7796:
                         bw, bh, idx, item))
         return out
     def _gui_rail(self):
-        back = {'meshadj': 'mesh', 'advanced': 'extrude',
-                'limits': 'more', 'more2': 'more',
-                'extrude2': 'extrude'}.get(self.gui_screen)
+        back = {'meshadj': 'mesh', 'advanced': 'calibrate',
+                'limits': 'calibrate'}.get(self.gui_screen)
         if back is None:
             back = ('scr', 'print') if self.gui_screen in ('ptune',
                                                            'filament') \
