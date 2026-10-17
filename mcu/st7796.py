@@ -318,7 +318,26 @@ def _hourglass_fn(i, j, n):
 EXTRA_ICONS = {
     # Our printer is a bed slinger, not a CoreXY cube: replace the MDI
     # 'print' icon everywhere it is used (menus + boot splash).
-    'print': _mk_bmp(64, _bedslinger_fn),
+    # Printer icon: the SVG supplied by the user (2041x2048), cropped,
+    # 60 px box-filtered into 64x64 and packed 1 bit/pixel.
+    'print': (64, 64, bytes.fromhex(
+        '0000000000000000000000000000000001e000000000078003f0000000000fc0'
+        '03f1000ff0008fc003f3800ff001cfc003f3800ff001cfc003ffff0ff0ffeff0'
+        '3fffff8ff1fffffc3fffff8ff1fffffc1fffff8ff1fffff803f3800ff001cfc0'
+        '03f3800ff001cfc003f3000ff000cfc003f0000ff0000fc003f00003e0000fc0'
+        '03f0000180000fc003f0000180000fc003f0000180000fc003f0000180000fc0'
+        '03f0000000000fc003f0000000000fc003f0000000000fc003f0000180000fc0'
+        '03f00003c0000fc003f00003c0000fc003f00003c0000fc003f0000780000fc0'
+        '03f001ff80000fc003f003ff00000fc003f007fe00000fc003f0078000000fc0'
+        '03f0070000000fc003f0070000000fc003f0078000000fc003f007ffffe00fc0'
+        '03f003fffff00fc003f000fffff80fc003f0000000780fc003f0000000380fc0'
+        '03f00000003c0fc003f01ffffffc0fc003f03ffffffc0fc003f03ffffffc0fc0'
+        '03f03ffffffc0fc003f03ffffffc0fc003f03ffffffc0fc003f03ffffffc0fc0'
+        '03f03ffffffc0fc003f01ffffffc0fc003f01ffffff80fc003f0000000000fc0'
+        '03f0000000000fc003f0000000000fc01ffffffffffffff83ffffffffffffffc'
+        '3ffffffffffffffc3ffffffffffffffc3ffffffffffffffc1ffffffffffffff8'
+        '00fe000000007f00007e000000007e0000000000000000000000000000000000'
+    )),
     'pause48': _mk_bmp(48, _pause_fn),
     'play48': _mk_bmp(48, _play_fn),
     'x48': _mk_bmp(48, _x_fn),
