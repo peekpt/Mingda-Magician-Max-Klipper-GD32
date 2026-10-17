@@ -3653,10 +3653,13 @@ class ST7796:
                    max(1, len(lines)))
         for i, (lab, val, col) in enumerate(lines):
             yy = y0 + i * step
+            # colour stripe on the left, like the print info list
+            ops.append(lambda yy=yy, col=col: self.cmd_rect.send(
+                [x0, yy + 1, 4, 26, col]))
             ops.append(lambda yy=yy, lab=lab: self._gui_text(
-                x0, yy, lab, COL_DIM, COL_BG, 1))
+                x0 + 12, yy, lab, COL_DIM, COL_BG, 1))
             ops.append(lambda yy=yy, val=val, col=col: self._gui_text(
-                x0, yy + 14, val, col, COL_BG, 1))
+                x0 + 12, yy + 14, val, col, COL_BG, 1))
         ops.append(lambda: self._gui_text_center(
             0, self.width, self.height - self.STRIP_H - 20, "by peekpt",
             COL_C3, COL_BG, 1))
