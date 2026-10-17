@@ -3217,9 +3217,13 @@ class ST7796:
             # Moving: stay off the wire for a moment after dispatching.
             self._gui_grace_until = reactor.monotonic() + 2.5
         self._gui_action_active = True
-        # Tell the user straight away that taps will be ignored from now on.
+        # Tell the user straight away that taps will be ignored from now on:
+        # the hourglass plus the message on the bottom bar (sent directly - a
+        # queued redraw would wait for the action to finish).
         try:
             self._draw_hourglass(True)
+            if self._gui_msg:
+                self._gui_bottombar(reactor.monotonic())
         except Exception:
             pass
         def _run(et, s=script):
@@ -3867,6 +3871,9 @@ class ST7796:
             script = "M300 S1000 P60\n" + (script or "")
         self._gui_run_action(script)
     def _gui_tap(self, rx, ry, eventtime):
+        if self._gui_action_active:
+            self.gcode.respond_info("GUI: busy - tap ignored")
+            return
         sx, sy = self._raw_to_screen(rx, ry)
         self.gcode.respond_info("GUI tap raw=(%d,%d) -> (%d,%d)"
                                 % (rx, ry, sx, sy))
