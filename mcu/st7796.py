@@ -1444,6 +1444,20 @@ class ST7796:
         # Hourglass: dark grey normally, WHITE while the touch will not respond
         # (display muted during homing/moves or while a GUI action runs).
         self._draw_hourglass(self._disp_quiet(eventtime))
+    def _gui_busy(self, text="PLEASE WAIT"):
+        # Centred overlay while a blocking action mutes the panel. Drawn
+        # directly (not queued) and wiped by the redraw that follows the
+        # action, so it disappears on its own.
+        w = min(360, self.width - self.RAIL_W - 40)
+        h = 84
+        x = self.RAIL_W + (self.width - self.RAIL_W - w) // 2
+        y = self.TOP_H + (self.height - self.STRIP_H - self.TOP_H - h) // 2
+        self._gui_round(x, y, w, h, self.gui_bar_bg)
+        self._gui_icon_at('hourglass20', x + 14, y + (h - 20) // 2, COL_WARN,
+                          self.gui_bar_bg, 20)
+        self._gui_text(x + 46, y + (h - 32) // 2, text, COL_WHITE,
+                       self.gui_bar_bg, 2)
+        self.cmd_rect.send([x + 46, y + h - 12, w - 60, 4, COL_WARN])
     def _draw_hourglass(self, dead):
         self._gui_icon_at('hourglass20', self.width - 22, 11,
                           COL_WHITE if dead else COL_DIM, self.gui_bar_bg,
@@ -3202,6 +3216,11 @@ class ST7796:
             feed = 600 if axis == 'Z' else 3000
             return "G91\nG1 %s%.3f F%d\nG90" % (axis, amt, feed)
         return "G91\nG1 %s%.3f F300\nG90" % (axis, amt)
+    # Actions that leave the panel muted for a while (heating, homing, a
+    # config save...): these get the centred "PLEASE WAIT" overlay.
+    _BUSY_TOKENS = ('M190', 'M109', 'G28', 'G29', 'SAVE_CONFIG', 'RESTART',
+                    'PROBE_CALIBRATE', 'BED_MESH_CALIBRATE', 'LOAD_FILAMENT',
+                    'UNLOAD_FILAMENT', 'PID_CALIBRATE')
     _MOVE_TOKENS = ('G28', 'G29', 'G1', 'G2', 'G3', 'SDCARD_PRINT_FILE',
                     'PROBE_CALIBRATE', 'BED_MESH_CALIBRATE', 'TESTZ',
                     'LOAD_FILAMENT', 'UNLOAD_FILAMENT', 'RESTART',
@@ -3224,6 +3243,8 @@ class ST7796:
             self._draw_hourglass(True)
             if self._gui_msg:
                 self._gui_bottombar(reactor.monotonic())
+            if any(t in script for t in self._BUSY_TOKENS):
+                self._gui_busy()
         except Exception:
             pass
         def _run(et, s=script):
