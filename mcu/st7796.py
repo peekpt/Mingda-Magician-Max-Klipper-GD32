@@ -3644,6 +3644,7 @@ class ST7796:
         except Exception:
             hn = '-'
         out.append(("Host", hn, COL_ACTIVE))
+        out.append(("Licence", "GPL-3.0", COL_WARN))
         return out
     def _info_view_ops(self, ops, eventtime):
         x0 = self.RAIL_W + 10

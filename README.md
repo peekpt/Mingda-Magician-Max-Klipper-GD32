@@ -312,4 +312,10 @@ layout change without touching the printer (needs Python + Pillow).
 
 ## Licence
 
-GPLv3 (the MCU driver and the host chip follow Klipper's licence).
+**GPL-3.0-or-later** (c) 2026 peekpt.
+
+The MCU driver (`fsmc_tft.c`) and the host chip (`st7796.py`) are built on
+[Klipper](https://www.klipper3d.org/) (GPLv3, (c) Kevin O'Connor and
+contributors), so they follow the same licence.
+Icons: Material Design Icons (c) Pictogrammers, Apache-2.0; the printer and
+sensor icons are original artwork for this project.
