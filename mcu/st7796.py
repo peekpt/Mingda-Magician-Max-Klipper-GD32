@@ -56,7 +56,7 @@ GUI_SCREENS = {
         ("Extruder", "extrude", ('scr', 'extrude')),
         ("Print", "print", ('scr', 'print')),
         ("Level", "bedmesh", ('scr', 'mesh')),
-        ("Z Calibrate", "zoffset", ('scr', 'probe')),
+        ("Z-Probe", "zoffset", ('scr', 'probe')),
         ("More", "settings", ('scr', 'more')),
         ("Home", "home", 'G28'),
     ],
@@ -95,16 +95,8 @@ GUI_SCREENS = {
         None, None, None, None, None, None,
         ("Back", "back", ('scr', 'extrude')),
     ],
-    'probe': [
-        ("Start", "probe", 'PROBE_CALIBRATE'),
-        ("Z -1", "down", 'TESTZ Z=-1'),
-        ("Z -0.1", "down", 'TESTZ Z=-0.1'),
-        ("Z +0.1", "up", 'TESTZ Z=+0.1'),
-        ("Z +1", "up", 'TESTZ Z=+1'),
-        ("Apply", "check", 'ACCEPT'),
-        ("Save", "save", 'SAVE_CONFIG'),
-        ("Back", "back", ('scr', 'main')),
-    ],
+    # 'probe' (Z-Probe) is drawn by _probe_view_ops: see Z_STEPS below.
+    'probe': [],
     # 'print' is built dynamically from the virtual SD files (see _print_items)
     'print': [],
     'filament': [
@@ -155,6 +147,9 @@ GUI_STRIP = {
 # Screens whose button grid is not the default 4 columns x 2 rows
 GUI_ROWS = {'print': 2}
 GUI_COLS = {}
+
+# Z-Probe: TESTZ steps, cycled by the step toggle button (mm).
+Z_STEPS = (0.005, 0.01, 0.1, 1.0)
 
 # Advanced (extruder) and machine limit screens: POPUP_ITEMS keys per card.
 ADV_KEYS = ('pa', 'smooth', 'shx', 'shy')
@@ -225,7 +220,7 @@ POPUP_ITEMS = {
 
 # Friendly titles for the top bar (otherwise the screen id is shown)
 GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filament',
-              'estop': 'Confirmar', 'mesh': 'Level',
+              'estop': 'Confirm', 'mesh': 'Level', 'probe': 'Z-Probe',
               'meshadj': 'Adjust', 'advanced': 'Advanced',
               'limits': 'Limits', 'more2': 'More 2/2',
               'extrude2': 'Extruder 2/2'}
@@ -499,6 +494,7 @@ class ST7796:
         self._card_cols = {}
         self._fil_unloaded = False
         self._BSTEPS = (0.005, 0.01, 0.1, 0.5)
+        self._zstep_i = 1
         self._bstep_i = 1
         self._baby_dirty = False
         self._popup = None
@@ -1726,7 +1722,7 @@ class ST7796:
                     self.gui_btn_bg
             else:
                 icon = 'x48'
-                lab = self._t("CONFIRM" if armed else "ABORT") \
+                lab = ("CONFIRM" if armed else "ABORT") \
                     if running else "CANCEL"
                 fg, bg = COL_WHITE, self.gui_btn_bg
             ops.append(lambda x=x, y=y, w=w, h=h, bg=bg: self._gui_round(
@@ -3135,6 +3131,8 @@ class ST7796:
             self._cards_view_ops(ops, ADV_KEYS, eventtime)
         elif self.gui_screen == 'limits':
             self._cards_view_ops(ops, LIM_KEYS, eventtime)
+        elif self.gui_screen == 'probe':
+            self._probe_view_ops(ops, eventtime)
         g = self.gui_btn_gap
         i2 = g // 2
         for (x, y, w, h, idx, item) in self._gui_buttons():
@@ -3408,7 +3406,7 @@ class ST7796:
                                          self.gui_btn_bg, 1))
         if accent is not None:
             ops.append(lambda bx=bx, by=by, bw2=bw2, bh2=bh2, accent=accent:
-                       self.cmd_rect.send([bx + 10, by + bh2 - 13, bw2 - 20, 5,
+                       self.cmd_rect.send([bx + 10, by + bh2 - 9, bw2 - 20, 5,
                                            accent]))
     def _net_view_ops(self, ops, eventtime):
         info = self._net_info()
@@ -3538,6 +3536,100 @@ class ST7796:
         ty = y + max(0, (h - 64) // 2)
         ops.append(lambda tx=tx, ty=ty, label=label, bg=bg, fg=fg:
                    self._gui_text(tx, ty, label, fg, bg, 4))
+    # --- Z-Probe (manual probe calibrate) ---------------------------------
+    # Layout follows the adjustment popup: [-][+][step] on top, then the
+    # Start / Apply / Save / Cancel row underneath.
+    def _probe_btns(self):
+        x0 = self.RAIL_W + 8
+        w = self.width - self.RAIL_W - 16
+        bw1 = (w - 16) // 3
+        bw2 = (w - 24) // 4
+        y1 = self.TOP_H + 76
+        h1 = 68
+        y2 = y1 + h1 + 8
+        h2 = self.height - self.STRIP_H - 6 - y2
+        out = [('minus', x0, y1, bw1, h1),
+               ('plus', x0 + bw1 + 8, y1, bw1, h1),
+               ('step', x0 + 2 * (bw1 + 8), y1, bw1, h1)]
+        for i, k in enumerate(('start', 'apply', 'save', 'cancel')):
+            out.append((k, x0 + i * (bw2 + 8), y2, bw2, h2))
+        return out
+    def _probe_read(self, eventtime):
+        # During PROBE_CALIBRATE show the nozzle Z being adjusted, otherwise
+        # the saved probe z_offset.
+        try:
+            mp = self.printer.lookup_object('manual_probe').get_status(
+                eventtime)
+        except Exception:
+            mp = {}
+        if mp.get('is_active'):
+            return "Nozzle Z", float(mp.get('z_position') or 0.)
+        try:
+            return "Z offset", float(self.printer.lookup_object(
+                'probe').get_status(eventtime).get('z_offset') or 0.)
+        except Exception:
+            return "Z offset", None
+    def _probe_view_ops(self, ops, eventtime):
+        x0 = self.RAIL_W + 8
+        y0 = self.TOP_H + 8
+        bg = self.gui_btn_bg
+        ops.append(lambda: self._gui_icon_at('zoffset', x0, y0, COL_WHITE,
+                                             COL_BG, 40))
+        lab, z = self._probe_read(eventtime)
+        val = "%+.3f" % z if z is not None else "--"
+        ops.append(lambda lab=lab: self._gui_text(x0 + 48, y0 + 2, lab,
+                                                  COL_C3, COL_BG, 1))
+        ops.append(lambda val=val: self._gui_text(x0 + 48, y0 + 18, val,
+                                                  COL_C1, COL_BG, 3))
+
+        ops.append(lambda: self._gui_text(x0 + 48 + 190, y0 + 2,
+                                          "step %g mm" % Z_STEPS[
+                                              self._zstep_i],
+                                          COL_DIM, COL_BG, 1))
+        for (kind, x, y, w, h) in self._probe_btns():
+            if kind in ('minus', 'plus'):
+                sign = '-' if kind == 'minus' else '+'
+                acc = self._gc(1) if kind == 'minus' else self._gc(0)
+                ops.append(lambda x=x, y=y, w=w, h=h: self._gui_round(
+                    x, y, w, h, bg))
+                ty = y + max(4, (h - 48 - 14) // 2)
+                ops.append(lambda x=x, y=y, w=w, sign=sign, ty=ty:
+                           self._gui_text(x + (w - 24) // 2, ty, sign,
+                                          COL_WHITE, bg, 3))
+                ops.append(lambda x=x, y=y, w=w, h=h, acc=acc:
+                           self.cmd_rect.send([x + 10, y + h - 11, w - 20,
+                                               5, acc]))
+            elif kind == 'step':
+                lab = "%g" % Z_STEPS[self._zstep_i]
+                ops.append(lambda x=x, y=y, w=w, h=h: self._gui_round(
+                    x, y, w, h, bg))
+                ops.append(lambda x=x, y=y, w=w, lab=lab:
+                           self._gui_text_center(x, w, y + 16, lab,
+                                                 COL_WHITE, bg, 2))
+                ops.append(lambda x=x, y=y, w=w, h=h:
+                           self.cmd_rect.send([x + 10, y + h - 11, w - 20,
+                                               5, COL_C3]))
+            else:
+                icon, acc = {'start': ('probe', COL_OK),
+                             'apply': ('check', COL_OK),
+                             'save': ('save', COL_OK),
+                             'cancel': ('x48', COL_ERR)}[kind]
+                lab = kind.capitalize()
+                ops.append(lambda x=x, y=y, w=w, h=h: self._gui_round(
+                    x, y, w, h, bg))
+                isz = 30
+                iw = (self._icon_at(icon, isz) or (0, 0))[0]
+                iy = y + max(6, (h - (isz + 6 + 16)) // 2 - 6)
+                ops.append(lambda x=x, y=y, w=w, icon=icon, iw=iw, iy=iy,
+                           isz=isz: self._gui_icon_at(
+                               icon, x + (w - iw) // 2, iy, COL_WHITE, bg,
+                               isz))
+                ops.append(lambda x=x, y=y, w=w, iy=iy, isz=isz, lab=lab:
+                           self._gui_text_center(x, w, iy + isz + 6, lab,
+                                                 COL_WHITE, bg, 1))
+                ops.append(lambda x=x, y=y, w=w, h=h, acc=acc:
+                           self.cmd_rect.send([x + 10, y + h - 10, w - 20,
+                                               5, acc]))
     def _estop_btns(self):
         bw = (self.width - self.RAIL_W) // 4
         y = self.TOP_H + 104
@@ -3606,6 +3698,37 @@ class ST7796:
         elif isinstance(action, tuple) and action[0] == 'bstep':
             self._bstep_i = (self._bstep_i + 1) % len(self._BSTEPS)
             self._gui_render(eventtime)
+        elif isinstance(action, tuple) and action[0] == 'zp':
+            kind = action[1]
+            now = self.printer.get_reactor().monotonic()
+            if kind == 'step':
+                self._zstep_i = (self._zstep_i + 1) % len(Z_STEPS)
+                self._gui_render(eventtime)
+                return
+            if kind in ('minus', 'plus'):
+                amt = Z_STEPS[self._zstep_i] * (
+                    -1. if kind == 'minus' else 1.)
+                self._gui_msg = "TESTZ %+.3f" % amt
+                self._gui_msg_until = now + 5.
+                script = 'TESTZ Z=%+g' % amt
+            elif kind == 'start':
+                self._gui_msg = "Homing, then PROBE_CALIBRATE..."
+                self._gui_msg_until = now + 240.
+                script = 'G28\nPROBE_CALIBRATE'
+            elif kind == 'apply':
+                self._gui_msg = "Z offset accepted (ACCEPT)"
+                self._gui_msg_until = now + 8.
+                script = 'ACCEPT'
+            elif kind == 'save':
+                self._gui_msg = "Homing, then SAVE_CONFIG..."
+                self._gui_msg_until = now + 240.
+                script = 'G28\nSAVE_CONFIG'
+            elif kind == 'cancel':
+                self._gui_msg = "Cancelled: heaters OFF"
+                self._gui_msg_until = now + 8.
+                self.gui_screen = 'main'
+                self._gui_render(eventtime)
+                script = 'M104 S0\nM140 S0\nABORT'
         elif isinstance(action, tuple) and action[0] == 'bsave':
             if not self._baby_dirty:
                 # Nothing changed - just leave the menu.
@@ -3826,6 +3949,12 @@ class ST7796:
                     self.gcode.respond_info("GUI nivelar: CANCELAR")
                     self._gui_do(('scr', 'print'), eventtime)
                 return
+        if self.gui_screen == 'probe':
+            for (kind, x, y, w, h) in self._probe_btns():
+                if x <= sx < x + w and y <= sy < y + h:
+                    self.gcode.respond_info("GUI zprobe: %s" % kind)
+                    self._gui_do(('zp', kind), eventtime)
+                    return
         if self.gui_screen == 'network':
             for (x, y, w, h, idx, item) in self._gui_buttons():
                 if x <= sx < x + w and y <= sy < y + h:

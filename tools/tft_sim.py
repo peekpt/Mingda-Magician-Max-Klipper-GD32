@@ -134,6 +134,10 @@ class Printer:
         if name == 'gcode_move':
             return Obj({'speed_factor': 1.0, 'extrude_factor': 0.98,
                         'gcode_position': [123.4, 45.6, 7.8, 0.0]})
+        if name == 'probe':
+            return Obj({'z_offset': -1.234})
+        if name == 'manual_probe':
+            return Obj({'is_active': False})
         if name == 'fan':
             return Obj({'speed': 1.0})
         if name == 'display_status':
@@ -147,6 +151,13 @@ class Printer:
                 'bed_mesh': {'mesh_min': [20.0, 20.0],
                              'mesh_max': [300.0, 300.0],
                              'probe_count': [4, 4]}}})
+        if name == 'bed_mesh':
+            return Obj({'mesh_min': [20.0, 20.0], 'mesh_max': [300.0, 300.0],
+                        'profile_name': 'default',
+                        'mesh_matrix': [[-6.85, -6.95, -7.09, -7.21],
+                                        [-6.99, -6.95, -6.99, -7.14],
+                                        [-7.11, -7.01, -6.95, -6.98],
+                                        [-7.31, -7.13, -6.98, -7.00]]})
         if name == 'input_shaper':
             return Obj({'shaper_type_x': 'mzv', 'shaper_freq_x': 43.2,
                         'shaper_type_y': 'ei', 'shaper_freq_y': 38.5})
@@ -187,6 +198,7 @@ def build(printing, paused=False):
     o._sd_page = 0
     o._sd_per_page = 6
     o._gui_steps, o._gui_step = (0.1, 1.0, 10.0), 1.0
+    o._zstep_i = 1
     o._ext_steps, o._ext_step = (1.0, 5.0), 1.0
     o._gui_msg, o._gui_msg_until = None, 0.0
     o._t_hist = [(200, 60)] * 20
@@ -263,7 +275,7 @@ def build(printing, paused=False):
 SCREENS = ('print', 'printp', 'printprev', 'list', 'main', 'ptune', 'ptemp', 'power',
            'estop', 'more', 'move', 'temperature', 'extrude', 'probe', 'tune',
            'network', 'modify', 'filament', 'popup', 'popupbaby', 'mesh', 'meshidle', 'meshadj',
-           'advanced', 'limits', 'more2', 'extrude2')
+           'advanced', 'limits', 'calib', 'meshbl', 'resonance', 'about')
 
 
 def render(which):
