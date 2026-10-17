@@ -55,7 +55,7 @@ GUI_SCREENS = {
         ("Temperature", "heatup", ('scr', 'temperature')),
         ("Extruder", "extrude", ('scr', 'extrude')),
         ("Print", "print", ('scr', 'print')),
-        ("Calibrate", "bedlevel", ('scr', 'calibrate')),
+        ("Calibrate", "probe", ('scr', 'calibrate')),
         ("More", "settings", ('scr', 'more')),
         ("Home", "home", 'G28'),
         None,
@@ -63,7 +63,7 @@ GUI_SCREENS = {
     # Tuning menus that used to live in main / Extrude / More.
     'calibrate': [
         ("Auto Level", "bedmesh", ('scr', 'mesh')),
-        ("Z-Probe", "zoffset", ('scr', 'probe')),
+        ("Z-Probe", "zprobe", ('scr', 'probe')),
         ("Limits", "limits", ('scr', 'limits')),
         ("Advanced", "cog", ('scr', 'advanced')),
         ("PID hot", "fire", ('pid', 'extruder')),
@@ -337,6 +337,26 @@ EXTRA_ICONS = {
         '03f0000000000fc003f0000000000fc01ffffffffffffff83ffffffffffffffc'
         '3ffffffffffffffc3ffffffffffffffc3ffffffffffffffc1ffffffffffffff8'
         '00fe000000007f00007e000000007e0000000000000000000000000000000000'
+    )),
+    # Z-Probe: proximity sensor icon supplied by the user (cap + lens +
+    # three sonar arcs), 60 px box-filtered into 64x64, 1 bit/pixel.
+    'zprobe': (64, 64, bytes.fromhex(
+        '00000000000000000000000000000000000fffffffffe000003ffffffffff800'
+        '00fffffffffffe0001ffffffffffff0001ffffffffffff0003ffffffffffff80'
+        '07ffffffffffffc007ffffffffffffc007ffffffffffffc00fffffffffffffe0'
+        '0fffffffffffffe00ffffff01fffffe00fffff0001ffffe00ffffc00007fffe0'
+        '0ffff800003fffe00fffe003800fffe00fffc03ff807ffe007ffc0fffe07ffc0'
+        '07ff81ffff03ffc00fff03ffff81ffe00ffe07ffffc0ffe00ffe0fffffe0ffe0'
+        '0ffc1ffffff07fe00ffc1ffffff07fe00ffc3ffffff87fe00ff83ffffff83fe0'
+        '00003ffffff8000000003ffffff8000000003ffffff8000000003ffffff80000'
+        '00003ffffff8000000003ffffff8000000003ffffff8000000003ffffff80000'
+        '00001ffffff0000000001ffffff0000000000fffffe0000000018fffffe30000'
+        '000387ffffc380000021c3ffff8708000070e1ffff0e1c000038f07ffc1e3800'
+        '0e38781ff03c38e00e1c3c00007870e0070e1f0001f0e1c0070f07c007c1e1c0'
+        '038783ffff83c38001c3c0fffe07870000e1e00fe00f0e0000f07800003c1e00'
+        '00783e0000f83c00003c0fc007e07800001e03ffff80f0000007807ffc03c000'
+        '0003e000000f80000001f800003f000000007f0001fc000000001ff01ff00000'
+        '000003ffff8000000000003ff800000000000000000000000000000000000000'
     )),
     'pause48': _mk_bmp(48, _pause_fn),
     'play48': _mk_bmp(48, _play_fn),
@@ -3708,7 +3728,7 @@ class ST7796:
         x0 = self.RAIL_W + 8
         y0 = self.TOP_H + 8
         bg = self.gui_btn_bg
-        ops.append(lambda: self._gui_icon_at('zoffset', x0, y0, COL_WHITE,
+        ops.append(lambda: self._gui_icon_at('zprobe', x0, y0, COL_WHITE,
                                              COL_BG, 40))
         lab, z = self._probe_read(eventtime)
         val = "%+.3f" % z if z is not None else "--"
