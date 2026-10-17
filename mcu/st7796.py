@@ -3766,11 +3766,11 @@ class ST7796:
     # A live temperature graph: the display stays awake for this screen (the
     # heater only runs PWM, no stepper timing to protect).
     def _pid_btns(self):
-        x0 = self.RAIL_W + 8
-        w = self.width - self.RAIL_W - 16
-        bw = (w - 8) // 2
-        y = self.height - self.STRIP_H - 52
-        return [('save', x0, y, bw, 46), ('back', x0 + bw + 8, y, bw, 46)]
+        # Right hand column of icon buttons; the graph takes the other three.
+        bw, bh = 132, 108
+        x = self.width - bw - 8
+        y0 = self.TOP_H + 10
+        return [('save', x, y0, bw, bh), ('back', x, y0 + bh + 12, bw, bh)]
     def _pid_status(self, eventtime):
         try:
             st = self.printer.lookup_object(
@@ -3782,7 +3782,7 @@ class ST7796:
             return None
     def _pid_view_ops(self, ops, eventtime):
         x0 = self.RAIL_W + 8
-        x1 = self.width - 8
+        x1 = self._pid_btns()[0][1] - 8          # three of the four columns
         now = self.printer.get_reactor().monotonic()
         st = self._pid_status(eventtime)
         if st is None:
@@ -3808,7 +3808,7 @@ class ST7796:
             x1 - 48, self.TOP_H + 6, "%02d:%02d" % (el // 60, el % 60),
             COL_DIM, COL_BG, 1))
         gy0 = self.TOP_H + 56
-        gy1 = self._pid_btns()[0][2] - 10
+        gy1 = self.height - self.STRIP_H - 10
         gw = x1 - x0
         gh = gy1 - gy0
         ops.append(lambda: self.cmd_rect.send([x0, gy0, gw, gh,
@@ -3828,18 +3828,13 @@ class ST7796:
             ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self.cmd_rect.send(
                 [bx, by, bw, max(1, bh), COL_HEAT]))
         for (kind, bx, by, bw, bh) in self._pid_btns():
-            lab = "Save" if kind == 'save' else "Back"
-            act = kind == 'save' and not self._pid_done
-            fg = COL_DIM if act else COL_WHITE
-            acc = (COL_DIM if act else COL_OK) if kind == 'save' else COL_WHITE
-            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self._gui_round(
-                bx, by, bw, bh, self.gui_btn_bg))
-            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, lab=lab, fg=fg:
-                       self._gui_text_center(bx, bw, by + (bh - 16) // 2,
-                                             lab, fg, self.gui_btn_bg, 1))
-            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, acc=acc:
-                       self.cmd_rect.send([bx + 8, by + bh - 8, bw - 16, 4,
-                                           acc]))
+            if kind == 'save':
+                done = self._pid_done
+                self._btn_ops(ops, bx, by, bw, bh, 'save', "Save",
+                              COL_WHITE if done else COL_DIM,
+                              accent=COL_OK if done else COL_DIM)
+            else:
+                self._btn_ops(ops, bx, by, bw, bh, 'back', "Back")
     # --- Z-Probe (manual probe calibrate) ---------------------------------
     # Layout follows the adjustment popup: [-][+][step] on top, then the
     # Start / Apply / Save / Cancel row underneath.
