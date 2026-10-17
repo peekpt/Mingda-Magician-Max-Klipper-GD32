@@ -35,6 +35,10 @@ COL_OK     = 0x2DE9   # #2DBF4A  green   -> at/over the target (-3C)
 COL_COOL   = 0x061A   # #26C6DA  cyan    -> cooling (target 0)
 COL_DIM    = 0x39E7   # #3A3A3A  grey    -> disabled rail icons
 COL_PREVIEW = COL_C3  # #009384  teal (theme accent) -> object preview
+# Usual 3D axis colours for the position readout.
+COL_AXIS_X = 0xF800   # red
+COL_AXIS_Y = 0x2DE9   # green
+COL_AXIS_Z = 0x2BDF   # #2979FF blue
 
 # Accent colours for the button underlines: the 4 theme accents plus 4 more, so
 # each of the 8 grid buttons gets its own colour.
@@ -2273,10 +2277,12 @@ class ST7796:
         try:
             gp = self.printer.lookup_object(
                 'gcode_move').get_status(eventtime)['gcode_position']
-            xyz = "X%.1f Y%.1f Z%.1f" % (float(gp[0]), float(gp[1]),
-                                         float(gp[2]))
+            parts = (("X%.1f" % float(gp[0]), COL_AXIS_X),
+                     ("Y%.1f" % float(gp[1]), COL_AXIS_Y),
+                     ("Z%.1f" % float(gp[2]), COL_AXIS_Z))
         except Exception:
-            xyz = "X- Y- Z-"
+            parts = (("X-", COL_AXIS_X), ("Y-", COL_AXIS_Y),
+                     ("Z-", COL_AXIS_Z))
         ps = self._print_status(eventtime) or {}
         info = ps.get('info') or {}
         lay, tot = info.get('current_layer'), info.get('total_layer')
@@ -2284,13 +2290,16 @@ class ST7796:
         dur = ps.get('print_duration') or 0
         ttxt = "TIME %d:%02d" % (dur // 3600, (dur // 60) % 60)
         ly = py + 22
-        ops.append(lambda px=px, ly=ly, xyz=xyz: self._gui_text(
-            px, ly, xyz, COL_WHITE, COL_BG, 1))
+        tx = px
+        for txt, col in parts:
+            ops.append(lambda tx=tx, ly=ly, txt=txt, col=col:
+                       self._gui_text(tx, ly, txt, col, COL_BG, 1))
+            tx += len(txt) * 8 + 4
         ops.append(lambda px=px, ly=ly, ttxt=ttxt: self._gui_text(
             px, ly + 18, ttxt, COL_ACTIVE, COL_BG, 1))
-        # layer / time-to-finish in the middle column, under the list
-        mx = self.RAIL_W + 170
-        my = self.TOP_H + 6 + 6 * 28 + 6
+        # layer / time-to-finish to the right of the position
+        mx = px + 156
+        my = ly
         if ltxt:
             ops.append(lambda mx=mx, my=my, ltxt=ltxt: self._gui_text(
                 mx, my, ltxt, COL_C3, COL_BG, 1))
@@ -3014,9 +3023,10 @@ class ST7796:
                 for i, k in enumerate(self._PRINT_KEYS)]
 
     def _print_bar_rect(self):
-        # Progress bar, under the image.
+        # Progress bar, under the image AND the info list.
         x, y, w, h = self._print_img_rect()
-        return (x, y + h + 10, w, 16)
+        lx, ly, lw, lh, _key = self._print_list_rows()[0]
+        return (x, y + h + 10, (lx + lw) - x, 16)
     _PRINT_KEYS = ('etemp', 'btemp', 'fan', 'flow', 'speed', 'baby')
     def _print_panel(self):
         # (x, y, w, h, index, popup key) for the 3x2 tappable info tiles.
@@ -3121,14 +3131,6 @@ class ST7796:
             self._popup_view_ops(ops, eventtime)
         else:
             self._print_3col_ops(ops, eventtime, values_only)
-        # X / Y / Z line
-        try:
-            gp = self.printer.lookup_object(
-                'gcode_move').get_status(eventtime)['gcode_position']
-            xyz = "X%.1f Y%.1f Z%.1f" % (float(gp[0]), float(gp[1]),
-                                         float(gp[2]))
-        except Exception:
-            xyz = "X- Y- Z-"
         self._print_btns_ops(ops, ps)
 
     def _print_btns_ops(self, ops, ps):
