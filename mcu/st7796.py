@@ -1462,13 +1462,13 @@ class ST7796:
             self._gui_heater('nozzle', 9, 34, nb)
             self._gui_heater('bed', 7, 120, bd)
         if self.gui_screen != 'print':
-            self._gui_text_center(0, self.width, 7,
-                                  (GUI_TITLES.get(
-                                      self.gui_screen,
-                                      self.gui_screen.capitalize())
-                                   + ' ' * 14)[:14], COL_WHITE, bg, 1)
+            # Centre the real title (the old code padded it to 14 chars,
+            # which pushed the visible text left of the middle).
+            title = GUI_TITLES.get(self.gui_screen,
+                                   self.gui_screen.capitalize())[:14]
+            self._gui_text_center(0, self.width, 7, title, COL_WHITE, bg, 1)
         ctxt, ccol = self._clock_text(eventtime)
-        self._gui_text(self.width - 96, 7, ctxt, ccol, bg, 1)
+        self._gui_text(self.width - 68, 7, ctxt, ccol, bg, 1)
         if self.gui_version:
             self._gui_text(self.width - 170, 7,
                            (self.gui_version + ' ' * 8)[:8], COL_DIM, bg, 1)
