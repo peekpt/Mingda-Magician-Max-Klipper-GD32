@@ -134,6 +134,7 @@ GUI_SCREENS = {
         ("Filam", "extrude", ('fsens',)),
         ("Network", "network", ('scr', 'network')),
         ("Beep", "alert", ('beep',)),
+        ("Info", "info", ('scr', 'info')),
     ],
 }
 
@@ -222,7 +223,8 @@ POPUP_ITEMS = {
 GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filament',
               'estop': 'Confirm', 'mesh': 'Auto Bed Level', 'probe': 'Z-Probe',
               'meshadj': 'Adjust', 'advanced': 'Advanced',
-              'limits': 'Limits', 'calibrate': 'Calibrate', 'pid': 'PID'}
+              'limits': 'Limits', 'calibrate': 'Calibrate', 'pid': 'PID',
+              'info': 'Info'}
 
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
 ICON = 0x100
@@ -1393,8 +1395,8 @@ class ST7796:
         return out
     def _gui_rail(self):
         back = {'meshadj': 'mesh', 'advanced': 'calibrate',
-                'limits': 'calibrate', 'pid': 'calibrate'}.get(
-                    self.gui_screen)
+                'limits': 'calibrate', 'pid': 'calibrate',
+                'info': 'more'}.get(self.gui_screen)
         if back is None:
             back = ('scr', 'print') if self.gui_screen in ('ptune',
                                                            'filament') \
@@ -3195,6 +3197,8 @@ class ST7796:
             self._probe_view_ops(ops, eventtime)
         elif self.gui_screen == 'pid':
             self._pid_view_ops(ops, eventtime)
+        elif self.gui_screen == 'info':
+            self._info_view_ops(ops, eventtime)
         g = self.gui_btn_gap
         i2 = g // 2
         for (x, y, w, h, idx, item) in self._gui_buttons():
@@ -3614,6 +3618,48 @@ class ST7796:
         ty = y + max(0, (h - 64) // 2)
         ops.append(lambda tx=tx, ty=ty, label=label, bg=bg, fg=fg:
                    self._gui_text(tx, ty, label, fg, bg, 4))
+    # --- Info -------------------------------------------------------------
+    def _info_lines(self, eventtime):
+        out = [("Release", str(self.gui_version or '-'), COL_C1)]
+        try:
+            kv = self.printer.get_start_args().get('software_version') or '-'
+        except Exception:
+            kv = '-'
+        out.append(("Klipper", kv, COL_C3))
+        mv = '-'
+        try:
+            p = os.path.expanduser('~/mainsail/.version')
+            if os.path.exists(p):
+                mv = (open(p).read().strip() or '-')[:28]
+        except Exception:
+            pass
+        out.append(("Mainsail", mv, COL_C4))
+        try:
+            kn = os.uname().release
+        except Exception:
+            kn = '-'
+        out.append(("Kernel", kn, COL_C2))
+        try:
+            hn = os.uname().nodename
+        except Exception:
+            hn = '-'
+        out.append(("Host", hn, COL_ACTIVE))
+        return out
+    def _info_view_ops(self, ops, eventtime):
+        x0 = self.RAIL_W + 10
+        y0 = self.TOP_H + 8
+        lines = self._info_lines(eventtime)
+        step = max(30, (self.height - self.STRIP_H - y0 - 40) //
+                   max(1, len(lines)))
+        for i, (lab, val, col) in enumerate(lines):
+            yy = y0 + i * step
+            ops.append(lambda yy=yy, lab=lab: self._gui_text(
+                x0, yy, lab, COL_DIM, COL_BG, 1))
+            ops.append(lambda yy=yy, val=val, col=col: self._gui_text(
+                x0, yy + 14, val, col, COL_BG, 1))
+        ops.append(lambda: self._gui_text_center(
+            0, self.width, self.height - self.STRIP_H - 20, "by peekpt",
+            COL_C3, COL_BG, 1))
     # --- PID tuning -------------------------------------------------------
     # A live temperature graph: the display stays awake for this screen (the
     # heater only runs PWM, no stepper timing to protect).
