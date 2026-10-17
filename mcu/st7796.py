@@ -3712,9 +3712,18 @@ class ST7796:
                 self._gui_msg_until = now + 5.
                 script = 'TESTZ Z=%+g' % amt
             elif kind == 'start':
-                self._gui_msg = "Homing, then PROBE_CALIBRATE..."
-                self._gui_msg_until = now + 240.
-                script = 'G28\nPROBE_CALIBRATE'
+                # PROBE_CALIBRATE (macros.cfg) already preheats, homes and
+                # centres: do not home again here.
+                try:
+                    if self.printer.lookup_object(
+                            'manual_probe').get_status(now).get('is_active'):
+                        self._gui_warn("Calibration already running")
+                        return
+                except Exception:
+                    pass
+                self._gui_msg = "Preheating, homing, centring..."
+                self._gui_msg_until = now + 900.
+                script = 'PROBE_CALIBRATE'
             elif kind == 'apply':
                 self._gui_msg = "Z offset accepted (ACCEPT)"
                 self._gui_msg_until = now + 8.
