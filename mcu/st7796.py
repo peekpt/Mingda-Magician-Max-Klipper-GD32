@@ -57,8 +57,8 @@ GUI_SCREENS = {
         ("Print", "print", ('scr', 'print')),
         ("Calibrate", "probe", ('scr', 'calibrate')),
         ("More", "settings", ('scr', 'more')),
+        ("Motors OFF", "power", 'M84'),
         ("Home", "home", 'G28'),
-        None,
     ],
     # Tuning menus that used to live in main / Extrude / More.
     'calibrate': [
@@ -130,7 +130,6 @@ GUI_SCREENS = {
         ("Filam", "extrude", ('fsens',)),
         ("Network", "network", ('scr', 'network')),
         ("Beep", "alert", ('beep',)),
-        ("Motors OFF", "power", 'M84'),
     ],
 }
 
