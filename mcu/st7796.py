@@ -96,12 +96,12 @@ GUI_SCREENS = {
         ("Back", "back", ('scr', 'extrude')),
     ],
     'probe': [
-        ("Calibrar", "probe", 'PROBE_CALIBRATE'),
+        ("Start", "probe", 'PROBE_CALIBRATE'),
         ("Z -1", "down", 'TESTZ Z=-1'),
         ("Z -0.1", "down", 'TESTZ Z=-0.1'),
         ("Z +0.1", "up", 'TESTZ Z=+0.1'),
         ("Z +1", "up", 'TESTZ Z=+1'),
-        ("Aceitar", "check", 'ACCEPT'),
+        ("Apply", "check", 'ACCEPT'),
         ("Save", "save", 'SAVE_CONFIG'),
         ("Back", "back", ('scr', 'main')),
     ],
@@ -1722,24 +1722,23 @@ class ST7796:
         for (x, y, w, h, kind) in self._mesh_btns():
             if kind == 'start':
                 icon = 'play48'
-                if running:
-                    lab, fg, bg = "START", COL_DIM, self.gui_btn_bg
-                else:
-                    lab, fg, bg = "START", COL_WHITE, COL_OK
+                lab, fg, bg = "START", (COL_DIM if running else COL_WHITE), \
+                    self.gui_btn_bg
             else:
                 icon = 'x48'
-                if running:
-                    lab = "CONFIRM" if armed else "ABORT"
-                    fg, bg = COL_WHITE, COL_ERR
-                else:
-                    lab, fg, bg = "CANCELAR", COL_WHITE, self.gui_btn_bg
+                lab = self._t("CONFIRM" if armed else "ABORT") \
+                    if running else "CANCEL"
+                fg, bg = COL_WHITE, self.gui_btn_bg
             ops.append(lambda x=x, y=y, w=w, h=h, bg=bg: self._gui_round(
                 x, y, w, h, bg))
             ops.append(lambda x=x, y=y, w=w, icon=icon, fg=fg, bg=bg:
                        self._gui_icon_at(icon, x + (w - 44) // 2, y + 8,
                                          fg, bg, 44))
             ops.append(lambda x=x, y=y, w=w, h=h, lab=lab, fg=fg, bg=bg:
-                       self._gui_text_center(x, w, y + h - 26, lab, fg, bg, 1))
+                       self._gui_text_center(x, w, y + h - 36, lab, fg, bg, 1))
+            acc = COL_OK if kind == 'start' else COL_ERR
+            ops.append(lambda x=x, y=y, w=w, h=h, acc=acc: self.cmd_rect.send(
+                [x + 10, y + h - 12, w - 20, 5, acc]))
         self._mesh_lbr = (running, armed)
 
     def _mesh_view_ops(self, ops, eventtime):
@@ -2005,7 +2004,7 @@ class ST7796:
     def _adj_save_ops(self, ops):
         x, y, w, h = 256, 244, 214, 36
         dirty = self._adj_dirty()
-        bg = COL_OK if dirty else self.gui_btn_bg
+        bg = self.gui_btn_bg
         fg = COL_WHITE if dirty else COL_DIM
         iw = (self._icon_at('save', 24) or (0, 0))[0]
         ops.append(lambda x=x, y=y, w=w, h=h, bg=bg: self._gui_round(
@@ -2013,7 +2012,10 @@ class ST7796:
         ops.append(lambda x=x, y=y, iw=iw, fg=fg, bg=bg: self._gui_icon_at(
             'save', x + 16, y + 6, fg, bg, 24))
         ops.append(lambda x=x, y=y, fg=fg, bg=bg: self._gui_text(
-            x + 52, y + 10, "SAVE", fg, bg, 1))
+            x + 52, y + 8, "SAVE", fg, bg, 1))
+        if dirty:
+            ops.append(lambda x=x, y=y, w=w, h=h: self.cmd_rect.send(
+                [x + 10, y + h - 8, w - 20, 4, COL_OK]))
         self._adj_lsave = dirty
 
     def _adj_view_ops(self, ops, eventtime):
@@ -2284,7 +2286,7 @@ class ST7796:
     def _cards_save_ops(self, ops, keys):
         x, y, w, h = self._cards_save_rect()
         ready = any(k in _SAVE_MAP for k in keys)
-        bg = COL_OK if ready else self.gui_btn_bg
+        bg = self.gui_btn_bg
         fg = COL_WHITE if ready else COL_DIM
         iw = (self._icon_at('save', 20) or (0, 0))[0]
         ops.append(lambda x=x, y=y, w=w, h=h, bg=bg: self._gui_round(
@@ -2531,7 +2533,7 @@ class ST7796:
             else:
                 # OK -> check mark (with a green line), Save -> floppy disk
                 if what == 'save':
-                    icon, bg, acc = 'save', COL_OK, None
+                    icon, bg, acc = 'save', self.gui_btn_bg, COL_OK
                 else:
                     icon, bg, acc = 'check', self.gui_btn_bg, COL_OK
                 isz = 30
@@ -3087,8 +3089,8 @@ class ST7796:
                               'play48' if paused else 'pause48',
                               "Resume" if paused else "Pause", accent=acc)
             else:
-                self._btn_ops(ops, x, y, w, h, 'x48', "Cancel", COL_ERR,
-                              accent=acc)
+                self._btn_ops(ops, x, y, w, h, 'x48', "Cancel", COL_WHITE,
+                              accent=COL_ERR)
     def _gui_render(self, eventtime):
         if self._gui_ops:
             return
@@ -3547,10 +3549,14 @@ class ST7796:
             0, self.width, self.TOP_H + 26, "CONFIRM?", COL_WARN, COL_BG, 3))
         for (x, y, w, h, kind) in self._estop_btns():
             if kind == 'yes':
-                self._big_btn(ops, x, y, w, h, "SIM", COL_ERR, COL_WHITE)
-            else:
-                self._big_btn(ops, x, y, w, h, "NAO", self.gui_btn_bg,
+                self._big_btn(ops, x, y, w, h, "YES", self.gui_btn_bg,
                               COL_WHITE)
+            else:
+                self._big_btn(ops, x, y, w, h, "NO", self.gui_btn_bg,
+                              COL_WHITE)
+            acc = COL_ERR if kind == 'yes' else COL_DIM
+            ops.append(lambda x=x, y=y, w=w, h=h, acc=acc: self.cmd_rect.send(
+                [x + 14, y + h - 14, w - 28, 6, acc]))
     def _host_power(self, what):
         # Runs in a worker thread: ask Moonraker (it holds the privileges).
         try:
