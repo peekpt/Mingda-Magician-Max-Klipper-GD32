@@ -127,7 +127,7 @@ class Printer:
         if name == 'virtual_sdcard':
             return Obj({'progress': 0.42, 'is_active': self.printing})
         if name == 'extruder':
-            return Obj({'temperature': 214.3, 'target': 215.0,
+            return Obj({'temperature': 214.3, 'target': 215.0, 'power': 0.62,
                         'pressure_advance': 0.045, 'smooth_time': 0.040})
         if name == 'heater_bed':
             return Obj({'temperature': 59.7, 'target': 60.0})

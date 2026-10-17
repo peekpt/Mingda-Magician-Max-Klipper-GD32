@@ -62,12 +62,14 @@ GUI_SCREENS = {
     ],
     # Tuning menus that used to live in main / Extrude / More.
     'calibrate': [
-        ("Level", "bedmesh", ('scr', 'mesh')),
+        ("Auto Level", "bedmesh", ('scr', 'mesh')),
         ("Z-Probe", "zoffset", ('scr', 'probe')),
         ("Limits", "limits", ('scr', 'limits')),
         ("Advanced", "cog", ('scr', 'advanced')),
+        ("PID hot", "fire", ('pid', 'extruder')),
+        ("PID bed", "bed", ('pid', 'heater_bed')),
         ("Back", "back", ('scr', 'main')),
-        None, None, None,
+        None,
     ],
     'move': [
         ("Home All", "home", 'G28'),
@@ -124,8 +126,6 @@ GUI_SCREENS = {
     ],
     'network': [],
     'more': [
-        ("PID hot", "fire", 'PID_CALIBRATE HEATER=extruder TARGET=200'),
-        ("PID bed", "bed", 'PID_CALIBRATE HEATER=heater_bed TARGET=60'),
         ("Save", "save", 'SAVE_CONFIG'),
         ("Filam", "extrude", ('fsens',)),
         ("Network", "network", ('scr', 'network')),
@@ -217,9 +217,9 @@ POPUP_ITEMS = {
 
 # Friendly titles for the top bar (otherwise the screen id is shown)
 GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filament',
-              'estop': 'Confirm', 'mesh': 'Level', 'probe': 'Z-Probe',
+              'estop': 'Confirm', 'mesh': 'Auto Bed Level', 'probe': 'Z-Probe',
               'meshadj': 'Adjust', 'advanced': 'Advanced',
-              'limits': 'Limits', 'calibrate': 'Calibrate'}
+              'limits': 'Limits', 'calibrate': 'Calibrate', 'pid': 'PID'}
 
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
 ICON = 0x100
@@ -491,6 +491,12 @@ class ST7796:
         self._fil_unloaded = False
         self._BSTEPS = (0.005, 0.01, 0.1, 0.5)
         self._zstep_i = 1
+        self._pid_heater = None
+        self._pid_samples = []
+        self._pid_t0 = 0.
+        self._pid_last = 0.
+        self._pid_active = False
+        self._pid_done = False
         self._bstep_i = 1
         self._baby_dirty = False
         self._popup = None
@@ -1345,7 +1351,8 @@ class ST7796:
         return out
     def _gui_rail(self):
         back = {'meshadj': 'mesh', 'advanced': 'calibrate',
-                'limits': 'calibrate'}.get(self.gui_screen)
+                'limits': 'calibrate', 'pid': 'calibrate'}.get(
+                    self.gui_screen)
         if back is None:
             back = ('scr', 'print') if self.gui_screen in ('ptune',
                                                            'filament') \
@@ -1861,7 +1868,7 @@ class ST7796:
         except Exception:
             m = None
         if not m or not m[0]:
-            self._gui_warn("No bed mesh - run Level first")
+            self._gui_warn("No bed mesh - run Auto Level first")
             return
         self._adj_orig = [list(r) for r in m]
         self._adj_cur = [list(r) for r in m]
@@ -2869,6 +2876,8 @@ class ST7796:
         # with "Timer too close". Printing has a deep move buffer, so redraws are
         # allowed then - but a G28/G29 inside a print still sets _homing.
         if self._gui_action_active:
+            if self.gui_screen == 'pid':
+                return False          # live PID graph: keep sampling/drawing
             return not self._mesh_can_draw()
         if self._homing:
             if eventtime - self._homing_t > 300.:   # safety: stale counter
@@ -3098,6 +3107,8 @@ class ST7796:
                               accent=COL_ERR)
     def _gui_render(self, eventtime):
         if self._gui_ops:
+            if self.gui_screen == 'pid' and self._pid_active:
+                self._gui_defer(eventtime, 0.3)   # retry the live graph
             return
         if self._disp_quiet(eventtime) and not self._mesh_can_draw():
             self._gui_defer(eventtime)
@@ -3142,6 +3153,8 @@ class ST7796:
             self._cards_view_ops(ops, LIM_KEYS, eventtime)
         elif self.gui_screen == 'probe':
             self._probe_view_ops(ops, eventtime)
+        elif self.gui_screen == 'pid':
+            self._pid_view_ops(ops, eventtime)
         g = self.gui_btn_gap
         i2 = g // 2
         for (x, y, w, h, idx, item) in self._gui_buttons():
@@ -3249,6 +3262,11 @@ class ST7796:
                 logging.exception("st7796: GUI action failed")
             finally:
                 self._gui_action_active = False
+                if self._pid_active:
+                    self._pid_active = False
+                    self._pid_done = True
+                    self._gui_msg = "PID done - Save to keep it"
+                    self._gui_msg_until = reactor.monotonic() + 600.
                 self._gui_defer(reactor.monotonic(), 0.2)
         reactor.register_async_callback(_run)
     # --- hot-end safeguard -------------------------------------------------
@@ -3556,6 +3574,84 @@ class ST7796:
         ty = y + max(0, (h - 64) // 2)
         ops.append(lambda tx=tx, ty=ty, label=label, bg=bg, fg=fg:
                    self._gui_text(tx, ty, label, fg, bg, 4))
+    # --- PID tuning -------------------------------------------------------
+    # A live temperature graph: the display stays awake for this screen (the
+    # heater only runs PWM, no stepper timing to protect).
+    def _pid_btns(self):
+        x0 = self.RAIL_W + 8
+        w = self.width - self.RAIL_W - 16
+        bw = (w - 8) // 2
+        y = self.height - self.STRIP_H - 52
+        return [('save', x0, y, bw, 46), ('back', x0 + bw + 8, y, bw, 46)]
+    def _pid_status(self, eventtime):
+        try:
+            st = self.printer.lookup_object(
+                self._pid_heater or 'extruder').get_status(eventtime)
+            return (float(st.get('temperature') or 0.),
+                    float(st.get('target') or 0.),
+                    float(st.get('power') or 0.))
+        except Exception:
+            return None
+    def _pid_view_ops(self, ops, eventtime):
+        x0 = self.RAIL_W + 8
+        x1 = self.width - 8
+        now = self.printer.get_reactor().monotonic()
+        st = self._pid_status(eventtime)
+        if st is None:
+            return
+        temp, tgt, pwr = st
+        if self._pid_active and now - self._pid_last >= 1.2:
+            self._pid_samples.append(temp)
+            del self._pid_samples[:-120]
+            self._pid_last = now
+            self._gui_defer(eventtime, 1.2)      # next sample/redraw
+        name = "PID hotend" if self._pid_heater == 'extruder' else "PID bed"
+        col = self._temp_color(temp, tgt)
+        ops.append(lambda: self._gui_text(x0, self.TOP_H + 6, name, COL_C3,
+                                          COL_BG, 1))
+        ops.append(lambda: self._gui_text(x0, self.TOP_H + 22,
+                                          "%d/%dC" % (temp, tgt), col,
+                                          COL_BG, 2))
+        ops.append(lambda: self._gui_text(
+            x0 + 170, self.TOP_H + 26, "PWM %d%%" % int(pwr * 100. + .5),
+            COL_WARN, COL_BG, 1))
+        el = int(now - self._pid_t0) if self._pid_t0 else 0
+        ops.append(lambda el=el: self._gui_text(
+            x1 - 48, self.TOP_H + 6, "%02d:%02d" % (el // 60, el % 60),
+            COL_DIM, COL_BG, 1))
+        gy0 = self.TOP_H + 56
+        gy1 = self._pid_btns()[0][2] - 10
+        gw = x1 - x0
+        gh = gy1 - gy0
+        ops.append(lambda: self.cmd_rect.send([x0, gy0, gw, gh,
+                                               self.gui_bar_bg]))
+        tmax = max(50., tgt + 25.)
+        ty = gy1 - int(min(1., tgt / tmax) * (gh - 2))
+        ops.append(lambda ty=ty: self.cmd_rect.send([x0, ty, gw, 1, COL_DIM]))
+        n = max(1, min(120, gw // 3))
+        smp = self._pid_samples[-n:]
+        cw = max(1, gw // n)
+        bars = []
+        for i, t in enumerate(smp):
+            h = int(min(1., max(0., t / tmax)) * (gh - 2))
+            if h > 0:
+                bars.append((x0 + i * cw, gy1 - h, max(1, cw - 1), h))
+        for (bx, by, bw, bh) in bars:
+            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self.cmd_rect.send(
+                [bx, by, bw, max(1, bh), COL_HEAT]))
+        for (kind, bx, by, bw, bh) in self._pid_btns():
+            lab = "Save" if kind == 'save' else "Back"
+            act = kind == 'save' and not self._pid_done
+            fg = COL_DIM if act else COL_WHITE
+            acc = (COL_DIM if act else COL_OK) if kind == 'save' else COL_WHITE
+            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self._gui_round(
+                bx, by, bw, bh, self.gui_btn_bg))
+            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, lab=lab, fg=fg:
+                       self._gui_text_center(bx, bw, by + (bh - 16) // 2,
+                                             lab, fg, self.gui_btn_bg, 1))
+            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, acc=acc:
+                       self.cmd_rect.send([bx + 8, by + bh - 8, bw - 16, 4,
+                                           acc]))
     # --- Z-Probe (manual probe calibrate) ---------------------------------
     # Layout follows the adjustment popup: [-][+][step] on top, then the
     # Start / Apply / Save / Cancel row underneath.
@@ -3718,6 +3814,28 @@ class ST7796:
         elif isinstance(action, tuple) and action[0] == 'bstep':
             self._bstep_i = (self._bstep_i + 1) % len(self._BSTEPS)
             self._gui_render(eventtime)
+        elif isinstance(action, tuple) and action[0] == 'pid':
+            if self._pid_active:
+                if self._pid_heater == action[1]:
+                    # already tuning this heater: just show the graph again
+                    self.gui_screen = 'pid'
+                    self._gui_render(eventtime)
+                else:
+                    self._gui_warn("PID already running")
+                return
+            heater = action[1]
+            target = 200 if heater == 'extruder' else 60
+            self._pid_heater = heater
+            self._pid_samples = []
+            self._pid_t0 = now
+            self._pid_last = now
+            self._pid_active = True
+            self._pid_done = False
+            self.gui_screen = 'pid'
+            self._gui_msg = "PID %s %dC - running" % (
+                "hotend" if heater == 'extruder' else "bed", target)
+            self._gui_msg_until = now + 900.
+            script = 'PID_CALIBRATE HEATER=%s TARGET=%d' % (heater, target)
         elif isinstance(action, tuple) and action[0] == 'zp':
             kind = action[1]
             now = self.printer.get_reactor().monotonic()
@@ -3887,7 +4005,7 @@ class ST7796:
             script = "M300 S1000 P60\n" + (script or "")
         self._gui_run_action(script)
     def _gui_tap(self, rx, ry, eventtime):
-        if self._gui_action_active:
+        if self._gui_action_active and self.gui_screen != 'pid':
             self.gcode.respond_info("GUI: busy - tap ignored")
             return
         sx, sy = self._raw_to_screen(rx, ry)
@@ -3981,6 +4099,18 @@ class ST7796:
                     self.gcode.respond_info("GUI nivelar: CANCELAR")
                     self._gui_do(('scr', 'print'), eventtime)
                 return
+        if self.gui_screen == 'pid':
+            for (kind, x, y, w, h) in self._pid_btns():
+                if x <= sx < x + w and y <= sy < y + h:
+                    self.gcode.respond_info("GUI pid: %s" % kind)
+                    if kind == 'save':
+                        if not self._pid_done:
+                            self._gui_warn("PID still running")
+                            return
+                        self._gui_do('SAVE_CONFIG', eventtime)
+                    else:
+                        self._gui_do(('scr', 'calibrate'), eventtime)
+                    return
         if self.gui_screen == 'probe':
             for (kind, x, y, w, h) in self._probe_btns():
                 if x <= sx < x + w and y <= sy < y + h:
