@@ -3770,7 +3770,7 @@ class ST7796:
         bw, bh = 132, 108
         x = self.width - bw - 8
         y0 = self.TOP_H + 10
-        return [('save', x, y0, bw, bh), ('back', x, y0 + bh + 12, bw, bh)]
+        return [('save', x, y0, bw, bh), ('abort', x, y0 + bh + 12, bw, bh)]
     def _pid_status(self, eventtime):
         try:
             st = self.printer.lookup_object(
@@ -3829,12 +3829,11 @@ class ST7796:
                 [bx, by, bw, max(1, bh), COL_HEAT]))
         for (kind, bx, by, bw, bh) in self._pid_btns():
             if kind == 'save':
-                done = self._pid_done
                 self._btn_ops(ops, bx, by, bw, bh, 'save', "Save",
-                              COL_WHITE if done else COL_DIM,
-                              accent=COL_OK if done else COL_DIM)
+                              accent=COL_OK)
             else:
-                self._btn_ops(ops, bx, by, bw, bh, 'back', "Back")
+                self._btn_ops(ops, bx, by, bw, bh, 'x48', "Abort",
+                              accent=COL_ERR)
     # --- Z-Probe (manual probe calibrate) ---------------------------------
     # Layout follows the adjustment popup: [-][+][step] on top, then the
     # Start / Apply / Save / Cancel row underneath.
