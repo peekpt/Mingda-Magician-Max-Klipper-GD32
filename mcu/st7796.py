@@ -3672,24 +3672,22 @@ class ST7796:
         ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self.cmd_rect.send(
             [bx + 10, by + bh - 9, bw - 20, 5, COL_OK]))
     def _filout_btns(self):
-        x0 = self.RAIL_W + 12
-        w = self.width - self.RAIL_W - 24
-        bw = (w - 12) // 2
-        y0 = self.TOP_H + 92
-        bh = (self.height - self.STRIP_H - y0 - 16 - 12) // 2
-        return [('unload', x0, y0, bw, bh),
-                ('load', x0 + bw + 12, y0, bw, bh),
-                ('resume', x0, y0 + bh + 12, bw, bh),
-                ('cancel', x0 + bw + 12, y0 + bh + 12, bw, bh)]
+        # 4 across, on the bottom row of a 2x4 grid; the text sits on top.
+        bw = (self.width - self.RAIL_W) // 4
+        bh = 108
+        y = self.height - self.STRIP_H - bh - 8
+        return [(k, self.RAIL_W + i * bw, y, bw, bh)
+                for i, k in enumerate(('unload', 'load', 'resume', 'cancel'))]
     def _filout_view_ops(self, ops, eventtime):
-        ops.append(lambda: self._gui_icon_at(
-            'alert', self.RAIL_W + 12, self.TOP_H + 10, COL_WARN, COL_BG, 40))
-        ops.append(lambda: self._gui_text(self.RAIL_W + 60, self.TOP_H + 12,
-                                          "FILAMENT RUNOUT", COL_WARN,
-                                          COL_BG, 2))
-        ops.append(lambda: self._gui_text(self.RAIL_W + 60, self.TOP_H + 44,
-                                          "Print paused - load or unload",
-                                          COL_DIM, COL_BG, 1))
+        cx = self.RAIL_W + (self.width - self.RAIL_W) // 2
+        ops.append(lambda: self._gui_icon_at('alert', cx - 18, self.TOP_H + 6,
+                                             COL_WARN, COL_BG, 36))
+        ops.append(lambda: self._gui_text_center(
+            self.RAIL_W, self.width - self.RAIL_W, self.TOP_H + 50,
+            "FILAMENT RUNOUT", COL_WARN, COL_BG, 2))
+        ops.append(lambda: self._gui_text_center(
+            self.RAIL_W, self.width - self.RAIL_W, self.TOP_H + 88,
+            "Print paused", COL_DIM, COL_BG, 1))
         for (kind, x, y, w, h) in self._filout_btns():
             icon, acc = {'unload': ('unload', COL_WARN),
                          'load': ('load', COL_C3),
