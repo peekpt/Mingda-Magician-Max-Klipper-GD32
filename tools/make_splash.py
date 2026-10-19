@@ -112,8 +112,8 @@ def build():
     img = Image.new('RGB', (W, H), BG)
     d = ImageDraw.Draw(img)
 
-    # logo: the MDI printer icon, orange
-    draw_icon(img, 'print', W // 2, 76, 104, ORANGE)
+    # logo: the Mingda brand mark, orange
+    draw_icon(img, 'mingda', W // 2, 70, 108, ORANGE)
 
     # title
     draw_text_c(d, W // 2, 136, "MINGDA", 4, WHITE)

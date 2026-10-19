@@ -344,6 +344,25 @@ EXTRA_ICONS = {
         '3ffffffffffffffc3ffffffffffffffc3ffffffffffffffc1ffffffffffffff8'
         '00fe000000007f00007e000000007e0000000000000000000000000000000000'
     )),
+    # Mingda brand mark (the user's logo), orange in the boot splash.
+    'mingda': (64, 64, bytes.fromhex(
+        '0000000000000000000000000000000000000000000000000000000000000000'
+        '0000000000000000000000018000000000000007e00000000000000ff8000000'
+        '0000003ffc000000000000ffff000000000001ffffc00000000007ffffe00000'
+        '00000ffffff8000000003ffffffc0001e0003ffffffe0007f0001ffffffc000f'
+        'fc0007fffff0003fff0003ffffc000ffff8001ffff8001ffffe0007ffe0007ff'
+        'fff8001ff8001ffffffc0007f0003fffffff0003c000ffffffff80000003ffff'
+        'ffffe0000007fffffffff800001ffffffffffc00003fffffffffff0000ffffff'
+        'ffffffc003fffffffffffff00ffffffffffffff81ffffffffffffffe7fffffff'
+        'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
+        'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
+        'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
+        'fffffffffffffffffffffffe7ffffffffffffff81ffffffffffffff007ffffff'
+        'ffffffc003ffffffffffff0000fffffffffffe00003ffffffffff800001fffff'
+        'ffffe0000007ffff3fffc0000001fffe0fff00000000fff807fc000000003fe0'
+        '03f8000000001fc000e000000000070000000000000000000000000000000000'
+        '0000000000000000000000000000000000000000000000000000000000000000'
+    )),
     # Z-Probe: proximity sensor icon supplied by the user (cap + lens +
     # three sonar arcs), 60 px box-filtered into 64x64, 1 bit/pixel.
     'zprobe': (64, 64, bytes.fromhex(
