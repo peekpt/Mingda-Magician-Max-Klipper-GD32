@@ -364,43 +364,25 @@ EXTRA_ICONS = {
         '0003e000000f80000001f800003f000000007f0001fc000000001ff01ff00000'
         '000003ffff8000000000003ff800000000000000000000000000000000000000'
     )),
-    # Filament present: spool seen end on (user's SVG).
-    'filok': (64, 64, bytes.fromhex(
-        '000000000000000000000000000000000000003ff8000000000001ffff000000'
-        '00000fffffe0000000003ffffff8000000007ffffffc00000001ffffffff0000'
-        '0003ffffffff80000007ffffffffc000000fffffffffe000001ffffffffff000'
-        '003ffffffffff800003ffffffffff800007ffffffffffc0000fffffffffffe00'
-        '00fffffffffffe0001ffffffffffff0001ffffffffffff0003fffff01fffff80'
-        '03ffffc007ffff8003ffff8003ffff8003ffff0001ffff8007fffe0000ffffc0'
-        '07fffe0000ffffc007fffc00007fffc007fffc00007fffc007fffc00007fffc0'
-        '07fffc00007fffc007fffc00007fffc007fffc00007fffc007fffc00007fffc0'
-        '07fffe0000ffffc007fffe0000ffffc003ffff0001ffff8003ffff8003ffff80'
-        '03ffffc007ffff8001fffff83fffff0001ffffffffffff0001ffffffffffff00'
-        '00ffffffffffff0000ffffffffffff00007fffffffffff00003fffffffffff00'
-        '003fffffffffff00001fffffffffff00000fffffffffff000007ffffffffff00'
-        '0003ffffffffff000000fffffffe7f0000007ffffffc7f0000001ffffff07f00'
-        '000007ffffc07f00000001ffff007f000000001ff0007f000000000000007f00'
-        '0000000000007f000000000000007f000000000000007f000000000000007f00'
-        '0000000000007e000000000000003c0000000000000000000000000000000000'
-    )),
-    # Filament runout: the same spool with a cross (user's SVG).
+    # Filament sensor: the extruder icon with a cross stamped in its top
+    # right corner (no filament). Built from tft_icons' 'extrude'.
     'filnout': (64, 64, bytes.fromhex(
-        '000000000000000000000000000000000000003ff8000000000001ffff000000'
-        '00000fffffe0000000003ffffff8000000007ffffffc00000001ffffffff0000'
-        '0003ffffffff80000007ffffffffc000000fffffffffe000001ffffffffff000'
-        '003f0fffffe1f800003e07ffffc0f800007e03ffff80fc0000fe01ffff00fe00'
-        '00fe00fffe00fe0001ff007ffc01ff0001ff803ff803ff0003ffc0000007ff80'
-        '03ffe000000fff8003fff000001fff8003fff800003fff8007fffc00007fffc0'
-        '07fffe0000ffffc007fffc00007fffc007fffc00007fffc007fffc00007fffc0'
-        '07fffc00007fffc007fffc00007fffc007fffc00007fffc007fffc00007fffc0'
-        '07fffc00007fffc007fffc00007fffc003fff800003fff8003fff000001fff80'
-        '03ffe000000fff8001ffc0183007ff0001ff803ff803ff0001ff007ffc01ff00'
-        '00fe00fffe00ff0000fe01ffff00ff00007e03ffff80ff00003e07ffffc0ff00'
-        '003f0fffffe1ff00001fffffffffff00000fffffffffff000007ffffffffff00'
-        '0003ffffffffff000000fffffffe7f0000007ffffffc7f0000001ffffff07f00'
-        '000007ffffc07f00000001ffff007f000000001ff0007f000000000000007f00'
-        '0000000000007f000000000000007f000000000000007f000000000000007f00'
-        '0000000000007e000000000000003c0000000000000000000000000000000000'
+        '0000000000000000000007ffffc0000000000fffffcf003c00000fffffc78078'
+        '00000fffffc3c0f000000fffffc1e1e000000fffffc0f3c000000fffffc07f80'
+        '00000fffffc03f0000000fffffc01e0000000fffffc03f0000000fffffc07f80'
+        '00000fffffc0f3c000000fffffc1e1e000000fffffc3c0f000000fffffc78078'
+        '00000fffffcf003c00000fffffc0000000000fffffc0000000000ffffffff000'
+        '0003ffffffffffc00003ffffffffffc00003ffffffffffc00003ffffffffffc0'
+        '0003ffffffffffc00003ffffffffffc00003ffffffffffc00003ffffffffffc0'
+        '0003ffffffffffc00003ffffffffffc00003ffffffffffc00003ffffffffffc0'
+        '0003ffffffffffc00003ffffffffffc00003ffffffffffc00001ffffffffff80'
+        '000001ffffffc000000000ffffff80000000007fffff00000000003ffffe0000'
+        '0000003ffffc00000000001ffff800000000000ffff0000000000007fff00000'
+        '00000003ffe0000000000001ffc0000000000000ff80000000000000ff000000'
+        '000000000000000000000000000000000000000000000000000000003e000000'
+        '000000007e000000000000007e000000000000007e000000000000007e000000'
+        '00000000fe00000000000001fe00000007fffffffe00000007fffffffc000000'
+        '07fffffff800000007fffffff000000007ffffffe000000007ffffff80000000'
     )),
     'pause48': _mk_bmp(48, _pause_fn),
     'play48': _mk_bmp(48, _play_fn),
@@ -1535,8 +1517,7 @@ class ST7796:
             fcol = COL_OK
         elif en and not det:
             fcol = COL_ERR
-        ficon = 'filok' if (not en or det) else 'filnout'
-        self._gui_icon_at(ficon, self.width - 126, 6, fcol, bg, 20)
+        self._gui_icon_at('extrude', self.width - 124, 8, fcol, bg, 18)
         # Hourglass: dark grey normally, WHITE while the touch will not respond
         # (display muted during homing/moves or while a GUI action runs).
         self._draw_hourglass(self._disp_quiet(eventtime))
