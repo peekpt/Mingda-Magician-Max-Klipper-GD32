@@ -316,6 +316,25 @@ layout change without touching the printer (needs Python + Pillow).
 
 ---
 
+## Hardware notes
+
+- **Host:** Raspberry Pi Zero 2 W, powered from the printer's 5 V rail and
+  wired to the board over UART (GPIO14/15 -> USART3, 1 Mbaud). Keep those
+  three wires (TX, RX, GND) short - twisted with GND - and away from the
+  stepper cables.
+- **Where it lives:** moved out of the chassis into the printer's tool box,
+  so the SD card and the USB ports can be reached without opening the
+  printer.
+- **If the WiFi drops:** on the panel use the alert icon -> *Reboot* (it goes
+  through the local Moonraker, no network needed). When the Pi is within
+  reach check `vcgencmd get_throttled` (`0x0` = no undervoltage) and
+  `dmesg | grep -i wlan`; a weak 5 V supply is the usual cause. Turning the
+  WiFi powersave off (`wifi.powersave = 2` in `/etc/NetworkManager/conf.d/`)
+  also helps.
+- **SD card:** keep a backup image; the host files live in
+  `~/klipper/klippy/extras/display/` (`st7796.py`, `tft_icons.py`,
+  `tft_thumb.py`).
+
 ## Licence
 
 **GPL-3.0-or-later** (c) 2026 peekpt.
