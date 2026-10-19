@@ -34,6 +34,7 @@ COL_HEAT   = 0xEB20   # #ED6500  orange  -> heating towards the target
 COL_OK     = 0x2DE9   # #2DBF4A  green   -> at/over the target (-3C)
 COL_COOL   = 0x061A   # #26C6DA  cyan    -> cooling (target 0)
 COL_DIM    = 0x39E7   # #3A3A3A  grey    -> disabled rail icons
+COL_DIM2   = 0x8C71   # #8C8C8C  lighter grey -> secondary text
 COL_PREVIEW = COL_C3  # #009384  teal (theme accent) -> object preview
 # Usual 3D axis colours for the position readout.
 COL_AXIS_X = 0xF800   # red
@@ -3676,18 +3677,17 @@ class ST7796:
         w, h = 380, 180
         x = (self.width - w) // 2
         y = self.TOP_H + (self.height - self.STRIP_H - self.TOP_H - h) // 2
-        ops.append(lambda: self._gui_round(x, y, w, h, bg))
-        # outline, so the box reads without painting the whole screen
-        for (ox, oy, ow, oh) in ((x, y, w, 2), (x, y + h - 2, w, 2),
-                                 (x, y, 2, h), (x + w - 2, y, 2, h)):
-            ops.append(lambda ox=ox, oy=oy, ow=ow, oh=oh: self.cmd_rect.send(
-                [ox, oy, ow, oh, COL_ACTIVE]))
+        # rounded outline: a slightly larger box in the border colour, the
+        # panel drawn on top with its corners cleared to that same colour
+        ops.append(lambda: self._gui_round(x - 2, y - 2, w + 4, h + 4,
+                                           COL_ACTIVE))
+        ops.append(lambda: self._gui_round(x, y, w, h, bg, COL_ACTIVE))
         ops.append(lambda: self._gui_icon_at('filnout', x + (w - 46) // 2,
                                              y + 10, COL_WARN, bg, 46))
         for i, txt in enumerate(lines[:2]):
             ops.append(lambda i=i, txt=txt, x=x, w=w, y=y, bg=bg:
                        self._gui_text_center(x, w, y + 64 + i * 18, txt,
-                                             COL_WHITE if i == 0 else COL_DIM,
+                                             COL_WHITE if i == 0 else COL_DIM2,
                                              bg, 1))
         bw, bh = self._notice_ok_btn()
         bx = x + (w - bw) // 2
@@ -3784,7 +3784,7 @@ class ST7796:
             ops.append(lambda yy=yy, col=col: self.cmd_rect.send(
                 [x0, yy + 1, 4, 26, col]))
             ops.append(lambda yy=yy, lab=lab: self._gui_text(
-                x0 + 12, yy, lab, COL_DIM, COL_BG, 1))
+                x0 + 12, yy, lab, COL_DIM2, COL_BG, 1))
             ops.append(lambda yy=yy, val=val, col=col: self._gui_text(
                 x0 + 12, yy + 14, val, col, COL_BG, 1))
         ops.append(lambda: self._gui_text_center(
