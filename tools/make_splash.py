@@ -28,7 +28,7 @@ ORANGE = (0xED, 0x65, 0x00)
 GREY = (0x40, 0x4E, 0x57)
 DIM = (0x5A, 0x5A, 0x5A)
 
-VERSION = 'R1'
+VERSION = 'R2'
 
 # --- font (8x14, 256 glyphs x 16 bytes, MSB = leftmost) ----------------------
 _fsrc = open(os.path.join(MCU, 'font8x14.h')).read()
