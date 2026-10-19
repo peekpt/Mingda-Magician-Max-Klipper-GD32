@@ -1323,17 +1323,21 @@ class ST7796:
         if w <= 0 or h <= 0 or self.cmd_bmp is None:
             return
         self._draw_bmp(bmp, x, y, fg, bg, key)
-    def _gui_round(self, x, y, w, h, color):
+    def _gui_round(self, x, y, w, h, color, bg=None):
+        # bg: colour the corners are cleared to (the surface behind the box).
+        # Without it a box drawn on another box gets dark notches at the
+        # corners.
         self.cmd_rect.send([x, y, w, h, color])
         r = self.gui_radius
         if r <= 0 or self.cmd_bmp is None:
             return
+        if bg is None:
+            bg = self.gui_bg
         tl, tr, bl, br = self._corners
-        self._bmp_at(tl, x, y, color, self.gui_bg, ('corner', 0))
-        self._bmp_at(tr, x + w - r, y, color, self.gui_bg, ('corner', 1))
-        self._bmp_at(bl, x, y + h - r, color, self.gui_bg, ('corner', 2))
-        self._bmp_at(br, x + w - r, y + h - r, color, self.gui_bg,
-                     ('corner', 3))
+        self._bmp_at(tl, x, y, color, bg, ('corner', 0))
+        self._bmp_at(tr, x + w - r, y, color, bg, ('corner', 1))
+        self._bmp_at(bl, x, y + h - r, color, bg, ('corner', 2))
+        self._bmp_at(br, x + w - r, y + h - r, color, bg, ('corner', 3))
     # --- virtual SD file browser ---
     def _sd_dir(self):
         try:
@@ -3672,10 +3676,12 @@ class ST7796:
         w, h = 380, 180
         x = (self.width - w) // 2
         y = self.TOP_H + (self.height - self.STRIP_H - self.TOP_H - h) // 2
-        ops.append(lambda: self.cmd_rect.send(
-            [0, self.TOP_H, self.width,
-             self.height - self.TOP_H - self.STRIP_H, COL_BG]))
         ops.append(lambda: self._gui_round(x, y, w, h, bg))
+        # outline, so the box reads without painting the whole screen
+        for (ox, oy, ow, oh) in ((x, y, w, 2), (x, y + h - 2, w, 2),
+                                 (x, y, 2, h), (x + w - 2, y, 2, h)):
+            ops.append(lambda ox=ox, oy=oy, ow=ow, oh=oh: self.cmd_rect.send(
+                [ox, oy, ow, oh, COL_ACTIVE]))
         ops.append(lambda: self._gui_icon_at('filnout', x + (w - 46) // 2,
                                              y + 10, COL_WARN, bg, 46))
         for i, txt in enumerate(lines[:2]):
@@ -3687,7 +3693,7 @@ class ST7796:
         bx = x + (w - bw) // 2
         by = y + h - bh - 12
         ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self._gui_round(
-            bx, by, bw, bh, self.gui_btn_bg))
+            bx, by, bw, bh, self.gui_btn_bg, bg))
         ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self._gui_text_center(
             bx, bw, by + (bh - 16) // 2, "OK", COL_WHITE, self.gui_btn_bg, 1))
         ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self.cmd_rect.send(
