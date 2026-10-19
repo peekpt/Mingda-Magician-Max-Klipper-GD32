@@ -364,25 +364,25 @@ EXTRA_ICONS = {
         '0003e000000f80000001f800003f000000007f0001fc000000001ff01ff00000'
         '000003ffff8000000000003ff800000000000000000000000000000000000000'
     )),
-    # Filament sensor: spool + thread + X (no filament), drawn from the
-    # user's artwork, 60 px box-filtered into 64x64, 1 bit/pixel.
+    # Filament sensor: extruder (gear + idler + nozzle) with the filament
+    # broken above it - drawn by the user, 60 px box-filtered, 1 bit/pixel.
     'filnout': (64, 64, bytes.fromhex(
-        '000000000000000000000000000000000001e007fd800000000ffc1ffff00000'
-        '003ffe3ffff80000007c1f7fcffe000000f007fce73f000000e001f8639f8000'
-        '01c301f0718fc00001c380e071c7c0000fffe0e071c7e0000ffff0f030c36000'
-        '0ffffcf030c330000ffffcf030c330000ffff8f030c338000fffe0e071c31800'
-        '01c3c0e071c7180001c300f0718e180001e001f0638e0c0000f003fce73c0c00'
-        '00780fffcf780c00003fff3ffff00c00001ffc1fffc00c000007f00fff000c00'
-        '0000000000000c000000000000000c000000000000000c000000000000000c00'
-        '0000000000000c000000000000000c000000000000000c000000000000000c00'
-        '0000000000000c00000000000000180000000000000018000000000000001800'
-        '0000000000001800000000000000180000000000000018000000000000003800'
-        '0000000000000000000000000000000000000000000000000000000000020180'
-        '00000000000703c000000000000f87e0000000000007cfc0000000000003ff80'
-        '000000000001ff00000000000000fe00000000000000fe00000000000001fe00'
-        '000000000003ff00000000000007ff8000000000000fc7c000000000000f83e0'
-        '00000000000701c0000000000002308000000000000030000000000000003000'
-        '0000000000003000000000000000300000000000000000000000000000000000'
+        '000000018000000000000019980000000000003c3c0000000000003e7c000000'
+        '0000001ff80000000000000ff000000000000007e000000000000007e0000000'
+        '0000000ff00000000000001ff80000000000003e7c0000000000003c3c000000'
+        '0000001998000000000000018000000000000001800000000000000180000000'
+        '00000001800000000000000180000000000000018003c00000000001800fe000'
+        '00000001803ff00000000001807c70000003fffd9ff870000007fffd9ffc7000'
+        '000ffffd9fffe0001feffffd9fffc0003feffffd9fffb8003feffffd9ffc7800'
+        '38efff3f9ff0f80030eff319dfe1f80038eff001dfc3f9f83feff001ef87f9fc'
+        '3fef8000360ff9fc3fef81f031f3f9fc3fefc7f877f9f9fc3fef87fc3c0cf9fc'
+        '3fef0f1e1806f9fc3fee0e0e18e379fc3fef0e0e31f379fc3fef8e1e333379fc'
+        '3fef8f3c333379fc3fef07fc11f379fc3fef03f838c279fc3fefe1e0fc06f9fc'
+        '3fefc000ee1cf9fc38efc000c7f9f9fc38effc07d8e7f9f838effcc7de1ff800'
+        '38effffddffff8003feffffddffff8003feffffddffff800000ffffddffff800'
+        '000ffffddffff800000fff00007ff8000003ff7fff7fe00000003f7fff7e0000'
+        '00003f7fff7c00000000007fff0000000000003fff0000000000003ffe000000'
+        '0000003ffe0000000000001ffc0000000000000ff800000000000007f0000000'
     )),
     'pause48': _mk_bmp(48, _pause_fn),
     'play48': _mk_bmp(48, _play_fn),
@@ -3679,11 +3679,11 @@ class ST7796:
         y = self.TOP_H + (self.height - self.STRIP_H - self.TOP_H - h) // 2
         # plain square box, no outline
         ops.append(lambda: self.cmd_rect.send([x, y, w, h, bg]))
-        ops.append(lambda: self._gui_icon_at('filnout', x + (w - 46) // 2,
-                                             y + 10, COL_WARN, bg, 46))
+        ops.append(lambda: self._gui_icon_at('filnout', x + (w - 56) // 2,
+                                             y + 8, COL_WARN, bg, 56))
         for i, txt in enumerate(lines[:2]):
             ops.append(lambda i=i, txt=txt, x=x, w=w, y=y, bg=bg:
-                       self._gui_text_center(x, w, y + 64 + i * 18, txt,
+                       self._gui_text_center(x, w, y + 68 + i * 20, txt,
                                              COL_WHITE if i == 0 else COL_DIM2,
                                              bg, 1))
         bw, bh = self._notice_ok_btn()
@@ -3704,15 +3704,15 @@ class ST7796:
                 for i, k in enumerate(('unload', 'load', 'resume', 'cancel'))]
     def _filout_view_ops(self, ops, eventtime):
         cx = self.RAIL_W + (self.width - self.RAIL_W) // 2
-        ops.append(lambda: self._gui_icon_at('filnout', cx - 24,
-                                             self.TOP_H + 4, COL_WARN,
-                                             COL_BG, 48))
+        ops.append(lambda: self._gui_icon_at('filnout', cx - 28,
+                                             self.TOP_H + 2, COL_WARN,
+                                             COL_BG, 56))
         ops.append(lambda: self._gui_text_center(
-            self.RAIL_W, self.width - self.RAIL_W, self.TOP_H + 60,
+            self.RAIL_W, self.width - self.RAIL_W, self.TOP_H + 62,
             "FILAMENT RUNOUT", COL_WARN, COL_BG, 2))
         ops.append(lambda: self._gui_text_center(
-            self.RAIL_W, self.width - self.RAIL_W, self.TOP_H + 96,
-            "Print paused", COL_DIM, COL_BG, 1))
+            self.RAIL_W, self.width - self.RAIL_W, self.TOP_H + 98,
+            "Print paused", COL_DIM2, COL_BG, 1))
         for (kind, x, y, w, h) in self._filout_btns():
             icon, acc = {'unload': ('unload', COL_WARN),
                          'load': ('load', COL_C3),
