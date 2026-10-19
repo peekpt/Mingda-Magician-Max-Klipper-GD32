@@ -364,25 +364,25 @@ EXTRA_ICONS = {
         '0003e000000f80000001f800003f000000007f0001fc000000001ff01ff00000'
         '000003ffff8000000000003ff800000000000000000000000000000000000000'
     )),
-    # Filament sensor: extruder (gear + idler + nozzle) with the filament
-    # broken above it - drawn by the user, 60 px box-filtered, 1 bit/pixel.
+    # Filament sensor: the extruder icon with a cross stamped in its top
+    # right corner (no filament). Built from tft_icons' 'extrude'.
     'filnout': (64, 64, bytes.fromhex(
-        '000000018000000000000019980000000000003c3c0000000000003e7c000000'
-        '0000001ff80000000000000ff000000000000007e000000000000007e0000000'
-        '0000000ff00000000000001ff80000000000003e7c0000000000003c3c000000'
-        '0000001998000000000000018000000000000001800000000000000180000000'
-        '00000001800000000000000180000000000000018003c00000000001800fe000'
-        '00000001803ff00000000001807c70000003fffd9ff870000007fffd9ffc7000'
-        '000ffffd9fffe0001feffffd9fffc0003feffffd9fffb8003feffffd9ffc7800'
-        '38efff3f9ff0f80030eff319dfe1f80038eff001dfc3f9f83feff001ef87f9fc'
-        '3fef8000360ff9fc3fef81f031f3f9fc3fefc7f877f9f9fc3fef87fc3c0cf9fc'
-        '3fef0f1e1806f9fc3fee0e0e18e379fc3fef0e0e31f379fc3fef8e1e333379fc'
-        '3fef8f3c333379fc3fef07fc11f379fc3fef03f838c279fc3fefe1e0fc06f9fc'
-        '3fefc000ee1cf9fc38efc000c7f9f9fc38effc07d8e7f9f838effcc7de1ff800'
-        '38effffddffff8003feffffddffff8003feffffddffff800000ffffddffff800'
-        '000ffffddffff800000fff00007ff8000003ff7fff7fe00000003f7fff7e0000'
-        '00003f7fff7c00000000007fff0000000000003fff0000000000003ffe000000'
-        '0000003ffe0000000000001ffc0000000000000ff800000000000007f0000000'
+        '0000000000000000000007ffffc0000000000fffffcf003c00000fffffc78078'
+        '00000fffffc3c0f000000fffffc1e1e000000fffffc0f3c000000fffffc07f80'
+        '00000fffffc03f0000000fffffc01e0000000fffffc03f0000000fffffc07f80'
+        '00000fffffc0f3c000000fffffc1e1e000000fffffc3c0f000000fffffc78078'
+        '00000fffffcf003c00000fffffc0000000000fffffc0000000000ffffffff000'
+        '0003ffffffffffc00003ffffffffffc00003ffffffffffc00003ffffffffffc0'
+        '0003ffffffffffc00003ffffffffffc00003ffffffffffc00003ffffffffffc0'
+        '0003ffffffffffc00003ffffffffffc00003ffffffffffc00003ffffffffffc0'
+        '0003ffffffffffc00003ffffffffffc00003ffffffffffc00001ffffffffff80'
+        '000001ffffffc000000000ffffff80000000007fffff00000000003ffffe0000'
+        '0000003ffffc00000000001ffff800000000000ffff0000000000007fff00000'
+        '00000003ffe0000000000001ffc0000000000000ff80000000000000ff000000'
+        '000000000000000000000000000000000000000000000000000000003e000000'
+        '000000007e000000000000007e000000000000007e000000000000007e000000'
+        '00000000fe00000000000001fe00000007fffffffe00000007fffffffc000000'
+        '07fffffff800000007fffffff000000007ffffffe000000007ffffff80000000'
     )),
     'pause48': _mk_bmp(48, _pause_fn),
     'play48': _mk_bmp(48, _play_fn),
@@ -1517,7 +1517,7 @@ class ST7796:
             fcol = COL_OK
         elif en and not det:
             fcol = COL_ERR
-        self._gui_icon_at('filnout', self.width - 126, 6, fcol, bg, 20)
+        self._gui_icon_at('extrude', self.width - 124, 8, fcol, bg, 18)
         # Hourglass: dark grey normally, WHITE while the touch will not respond
         # (display muted during homing/moves or while a GUI action runs).
         self._draw_hourglass(self._disp_quiet(eventtime))
