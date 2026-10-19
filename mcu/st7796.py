@@ -4039,6 +4039,7 @@ class ST7796:
             return False
     def _gui_do(self, action, eventtime):
         script = None
+        now = self.printer.get_reactor().monotonic()
         if isinstance(action, tuple) and action[0] == 'scr':
             if self._popup is not None:
                 # rail back / other navigation: ignore the pending change
