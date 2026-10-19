@@ -3677,11 +3677,8 @@ class ST7796:
         w, h = 380, 180
         x = (self.width - w) // 2
         y = self.TOP_H + (self.height - self.STRIP_H - self.TOP_H - h) // 2
-        # rounded outline: a slightly larger box in the border colour, the
-        # panel drawn on top with its corners cleared to that same colour
-        ops.append(lambda: self._gui_round(x - 2, y - 2, w + 4, h + 4,
-                                           COL_ACTIVE))
-        ops.append(lambda: self._gui_round(x, y, w, h, bg, COL_ACTIVE))
+        # plain square box, no outline
+        ops.append(lambda: self.cmd_rect.send([x, y, w, h, bg]))
         ops.append(lambda: self._gui_icon_at('filnout', x + (w - 46) // 2,
                                              y + 10, COL_WARN, bg, 46))
         for i, txt in enumerate(lines[:2]):
