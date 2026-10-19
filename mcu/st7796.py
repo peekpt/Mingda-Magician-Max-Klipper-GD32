@@ -364,7 +364,7 @@ EXTRA_ICONS = {
         '0003e000000f80000001f800003f000000007f0001fc000000001ff01ff00000'
         '000003ffff8000000000003ff800000000000000000000000000000000000000'
     )),
-    # Filament present: spool seen end on (user's drawing).
+    # Filament present: spool seen end on (user's SVG).
     'filok': (64, 64, bytes.fromhex(
         '000000000000000000000000000000000000003ff8000000000001ffff000000'
         '00000fffffe0000000003ffffff8000000007ffffffc00000001ffffffff0000'
@@ -383,20 +383,20 @@ EXTRA_ICONS = {
         '0000000000007f000000000000007f000000000000007f000000000000007f00'
         '0000000000007e000000000000003c0000000000000000000000000000000000'
     )),
-    # Filament runout: the same spool with a cross (user's drawing).
+    # Filament runout: the same spool with a cross (user's SVG).
     'filnout': (64, 64, bytes.fromhex(
         '000000000000000000000000000000000000003ff8000000000001ffff000000'
         '00000fffffe0000000003ffffff8000000007ffffffc00000001ffffffff0000'
-        '0003ffffffff80000007ffffffffc000000f0fffffe1e000001c43ffff847000'
-        '003df1ffff1f78000039f8fffe3f38000079fc7ffc7f3c0000f9fe3ff8ff3e00'
-        '00f9ff1ff1ff3e0001fcff8fe3fe7f0001fc7fc7c7fc7f0003fe3fe00ff8ff80'
-        '03ff1ff01ff1ff8003ff8ff83fe3ff8003ffc7fc7fc7ff8007ffe3ffff8fffc0'
-        '07fff1ffff1fffc007fff8fffe3fffc007fffc7ffc7fffc007fffc3ff87fffc0'
-        '07fffc3ff87fffc007fffc7ffc7fffc007fffcfffe7fffc007fff9ffff3fffc0'
-        '07fff3ffff9fffc007ffe7feffcfffc003ffcffc7fe7ff8003ff9ff83ff3ff80'
-        '03ff3ff01ff9ff8001fe7fe00ffcff0001fcffc7c7fe7f0001fdff9ff3ff7f00'
-        '00f9ff3ff9ff3f0000f9fe7ffcff3f000079fcfffe7f3f000039f9ffff3f3f00'
-        '003cf3ffff9e7f00001e07ffffc0ff00000f8fffffe3ff000007ffffffffff00'
+        '0003ffffffff80000007ffffffffc000000fffffffffe000001ffffffffff000'
+        '003f0fffffe1f800003e07ffffc0f800007e03ffff80fc0000fe01ffff00fe00'
+        '00fe00fffe00fe0001ff007ffc01ff0001ff803ff803ff0003ffc0000007ff80'
+        '03ffe000000fff8003fff000001fff8003fff800003fff8007fffc00007fffc0'
+        '07fffe0000ffffc007fffc00007fffc007fffc00007fffc007fffc00007fffc0'
+        '07fffc00007fffc007fffc00007fffc007fffc00007fffc007fffc00007fffc0'
+        '07fffc00007fffc007fffc00007fffc003fff800003fff8003fff000001fff80'
+        '03ffe000000fff8001ffc0183007ff0001ff803ff803ff0001ff007ffc01ff00'
+        '00fe00fffe00ff0000fe01ffff00ff00007e03ffff80ff00003e07ffffc0ff00'
+        '003f0fffffe1ff00001fffffffffff00000fffffffffff000007ffffffffff00'
         '0003ffffffffff000000fffffffe7f0000007ffffffc7f0000001ffffff07f00'
         '000007ffffc07f00000001ffff007f000000001ff0007f000000000000007f00'
         '0000000000007f000000000000007f000000000000007f000000000000007f00'
