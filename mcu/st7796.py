@@ -363,6 +363,26 @@ EXTRA_ICONS = {
         '0003e000000f80000001f800003f000000007f0001fc000000001ff01ff00000'
         '000003ffff8000000000003ff800000000000000000000000000000000000000'
     )),
+    # Filament sensor: spool + thread + X (no filament), drawn from the
+    # user's artwork, 60 px box-filtered into 64x64, 1 bit/pixel.
+    'filnout': (64, 64, bytes.fromhex(
+        '000000000000000000000000000000000001e007fd800000000ffc1ffff00000'
+        '003ffe3ffff80000007c1f7fcffe000000f007fce73f000000e001f8639f8000'
+        '01c301f0718fc00001c380e071c7c0000fffe0e071c7e0000ffff0f030c36000'
+        '0ffffcf030c330000ffffcf030c330000ffff8f030c338000fffe0e071c31800'
+        '01c3c0e071c7180001c300f0718e180001e001f0638e0c0000f003fce73c0c00'
+        '00780fffcf780c00003fff3ffff00c00001ffc1fffc00c000007f00fff000c00'
+        '0000000000000c000000000000000c000000000000000c000000000000000c00'
+        '0000000000000c000000000000000c000000000000000c000000000000000c00'
+        '0000000000000c00000000000000180000000000000018000000000000001800'
+        '0000000000001800000000000000180000000000000018000000000000003800'
+        '0000000000000000000000000000000000000000000000000000000000020180'
+        '00000000000703c000000000000f87e0000000000007cfc0000000000003ff80'
+        '000000000001ff00000000000000fe00000000000000fe00000000000001fe00'
+        '000000000003ff00000000000007ff8000000000000fc7c000000000000f83e0'
+        '00000000000701c0000000000002308000000000000030000000000000003000'
+        '0000000000003000000000000000300000000000000000000000000000000000'
+    )),
     'pause48': _mk_bmp(48, _pause_fn),
     'play48': _mk_bmp(48, _play_fn),
     'x48': _mk_bmp(48, _x_fn),
@@ -1492,7 +1512,7 @@ class ST7796:
             fcol = COL_OK
         elif en and not det:
             fcol = COL_ERR
-        self._gui_icon_at('extrude', self.width - 124, 8, fcol, bg, 18)
+        self._gui_icon_at('filnout', self.width - 126, 6, fcol, bg, 20)
         # Hourglass: dark grey normally, WHITE while the touch will not respond
         # (display muted during homing/moves or while a GUI action runs).
         self._draw_hourglass(self._disp_quiet(eventtime))
@@ -3630,7 +3650,7 @@ class ST7796:
                    self._gui_text(tx, ty, label, fg, bg, 4))
     # --- Filament ---------------------------------------------------------
     def _notice_ok_btn(self):
-        return ((self.width - 160) // 2, 0, 160, 42)
+        return (160, 42)
     @staticmethod
     def _wrap(text, n=44):
         out, cur = [], ''
@@ -3649,22 +3669,23 @@ class ST7796:
             lines.extend(self._wrap(t))
         lines = lines[:3]
         bg = self.gui_bar_bg
-        w, h = 400, 150
+        w, h = 380, 180
         x = (self.width - w) // 2
         y = self.TOP_H + (self.height - self.STRIP_H - self.TOP_H - h) // 2
         ops.append(lambda: self.cmd_rect.send(
             [0, self.TOP_H, self.width,
              self.height - self.TOP_H - self.STRIP_H, COL_BG]))
         ops.append(lambda: self._gui_round(x, y, w, h, bg))
-        ops.append(lambda: self._gui_icon_at('alert', x + 14, y + 12,
-                                             COL_WARN, bg, 28))
-        for i, txt in enumerate(lines[:3]):
-            ops.append(lambda i=i, txt=txt, x=x, y=y, bg=bg:
-                       self._gui_text(x + 52, y + 14 + i * 18, txt,
-                                      COL_WHITE if i == 0 else COL_DIM,
-                                      bg, 1))
-        bx, by, bw, bh = self._notice_ok_btn()
-        by = y + h - 56
+        ops.append(lambda: self._gui_icon_at('filnout', x + (w - 46) // 2,
+                                             y + 10, COL_WARN, bg, 46))
+        for i, txt in enumerate(lines[:2]):
+            ops.append(lambda i=i, txt=txt, x=x, w=w, y=y, bg=bg:
+                       self._gui_text_center(x, w, y + 64 + i * 18, txt,
+                                             COL_WHITE if i == 0 else COL_DIM,
+                                             bg, 1))
+        bw, bh = self._notice_ok_btn()
+        bx = x + (w - bw) // 2
+        by = y + h - bh - 12
         ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self._gui_round(
             bx, by, bw, bh, self.gui_btn_bg))
         ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self._gui_text_center(
@@ -3680,13 +3701,14 @@ class ST7796:
                 for i, k in enumerate(('unload', 'load', 'resume', 'cancel'))]
     def _filout_view_ops(self, ops, eventtime):
         cx = self.RAIL_W + (self.width - self.RAIL_W) // 2
-        ops.append(lambda: self._gui_icon_at('alert', cx - 18, self.TOP_H + 6,
-                                             COL_WARN, COL_BG, 36))
+        ops.append(lambda: self._gui_icon_at('filnout', cx - 24,
+                                             self.TOP_H + 4, COL_WARN,
+                                             COL_BG, 48))
         ops.append(lambda: self._gui_text_center(
-            self.RAIL_W, self.width - self.RAIL_W, self.TOP_H + 50,
+            self.RAIL_W, self.width - self.RAIL_W, self.TOP_H + 60,
             "FILAMENT RUNOUT", COL_WARN, COL_BG, 2))
         ops.append(lambda: self._gui_text_center(
-            self.RAIL_W, self.width - self.RAIL_W, self.TOP_H + 88,
+            self.RAIL_W, self.width - self.RAIL_W, self.TOP_H + 96,
             "Print paused", COL_DIM, COL_BG, 1))
         for (kind, x, y, w, h) in self._filout_btns():
             icon, acc = {'unload': ('unload', COL_WARN),
