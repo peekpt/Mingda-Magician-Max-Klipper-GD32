@@ -15,13 +15,19 @@ max (most of the time is the first controller flash).
 | | |
 |---|---|
 | ![Printing screen](images/panel_print.png) | ![Main menu](images/panel_main.png) |
-| Printing: object preview, live info list, pause/cancel | Main menu |
+| Printing: object preview, live info list, pause/cancel | Main menu: calibrate, motors off, home |
+| ![Calibrate](images/panel_calibrate.png) | ![Z-Probe](images/panel_zcalibrate.png) |
+| Calibrate: every tuning screen in one place | Z-Probe: step toggle, start / apply / save / cancel |
 | ![Leveling](images/panel_level.png) | ![Adjust](images/panel_adjust.png) |
-| Bed leveling with a live probe map | Manually adjust any mesh point |
+| Bed leveling (ABL) with a live probe map | Manually adjust any mesh point |
 | ![Advanced](images/panel_advanced.png) | ![Limits](images/panel_limits.png) |
 | Advanced: pressure advance, smooth time, input shaper | Machine limits: speed, acceleration, … |
+| ![PID](images/panel_pid.png) | ![Info](images/panel_info.png) |
+| PID tuning with a live temperature graph | Info: release, Klipper, Mainsail, kernel |
+| ![Filament runout](images/panel_filament_runout.png) | ![No filament](images/panel_no_filament.png) |
+| Filament runout: unload / load, resume, cancel | Warning when a print starts without filament |
 | ![Boot splash](images/splash.png) | ![More](images/panel_more.png) |
-| Boot splash (drawn by the printer board) | More: PID, network, motors,… |
+| Boot splash (drawn by the printer board) | More: save config, filament sensor, network, beeps |
 
 ---
 
