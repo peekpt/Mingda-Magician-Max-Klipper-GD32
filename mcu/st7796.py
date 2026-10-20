@@ -3359,7 +3359,7 @@ class ST7796:
     # config save...): these get the centred "PLEASE WAIT" overlay.
     _BUSY_TOKENS = ('M190', 'M109', 'G28', 'G29', 'SAVE_CONFIG', 'RESTART',
                     'PROBE_CALIBRATE', 'BED_MESH_CALIBRATE', 'LOAD_FILAMENT',
-                    'UNLOAD_FILAMENT', 'PID_CALIBRATE')
+                    'UNLOAD_FILAMENT')
     _MOVE_TOKENS = ('G28', 'G29', 'G1', 'G2', 'G3', 'SDCARD_PRINT_FILE',
                     'PROBE_CALIBRATE', 'BED_MESH_CALIBRATE', 'TESTZ',
                     'LOAD_FILAMENT', 'UNLOAD_FILAMENT', 'RESTART',
@@ -3865,11 +3865,12 @@ class ST7796:
         if st is None:
             return
         temp, tgt, pwr = st
-        if self._pid_active and now - self._pid_last >= 1.2:
-            self._pid_samples.append(temp)
-            del self._pid_samples[:-120]
-            self._pid_last = now
-            self._gui_defer(eventtime, 1.2)      # next sample/redraw
+        if self._pid_active:
+            if now - self._pid_last >= 1.2:
+                self._pid_samples.append(temp)
+                del self._pid_samples[:-120]
+                self._pid_last = now
+            self._gui_defer(eventtime, 1.2)      # keep the graph ticking
         name = "PID hotend" if self._pid_heater == 'extruder' else "PID bed"
         col = self._temp_color(temp, tgt)
         ops.append(lambda: self._gui_text(x0, self.TOP_H + 6, name, COL_C3,
@@ -4092,10 +4093,12 @@ class ST7796:
             self._pid_active = True
             self._pid_done = False
             self.gui_screen = 'pid'
+            self._pid_last = 0.          # take the first sample at once
             self._gui_msg = "PID %s %dC - running" % (
                 "hotend" if heater == 'extruder' else "bed", target)
             self._gui_msg_until = now + 900.
             script = 'PID_CALIBRATE HEATER=%s TARGET=%d' % (heater, target)
+            self._gui_render(eventtime)      # the graph, before the run starts
         elif isinstance(action, tuple) and action[0] == 'zp':
             kind = action[1]
             now = self.printer.get_reactor().monotonic()
