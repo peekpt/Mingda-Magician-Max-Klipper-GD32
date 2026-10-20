@@ -631,6 +631,7 @@ class ST7796:
         self._kb_ssid = ''
         self._kb_shift = False
         self._kb_sym = False
+        self._kb_show = False
         self._bstep_i = 1
         self._baby_dirty = False
         self._popup = None
@@ -1606,6 +1607,9 @@ class ST7796:
         elif en and not det:
             fcol = COL_ERR
         self._gui_icon_at('extrude', self.width - 124, 8, fcol, bg, 18)
+        # WiFi: white while associated, grey when there is no link
+        wcol = COL_WHITE if self._wifi_link() else COL_DIM
+        self._gui_icon_at('network', self.width - 102, 8, wcol, bg, 18)
         # Hourglass: dark grey normally, WHITE while the touch will not respond
         # (display muted during homing/moves or while a GUI action runs).
         self._draw_hourglass(self._disp_quiet(eventtime))
@@ -3658,7 +3662,11 @@ class ST7796:
                      // max(1, len(lines)))
         for i, (lab, val, col) in enumerate(lines):
             self._info_line(ops, ix0, y0 + i * line_h, ix1, lab, val, col)
+        link = self._wifi_link()
         for (kind, icon, lab, x, y, w, h) in self._net_btns():
+            if kind == 'down':
+                lab = "Disconnect" if link else "Connect"
+                icon = 'power' if link else 'refresh'
             self._btn_ops(ops, x, y, w, h, icon, lab)
     def _net_tap(self, sx, sy, eventtime):
         for (kind, icon, lab, x, y, w, h) in self._net_btns():
@@ -3670,6 +3678,8 @@ class ST7796:
                 elif kind == 'ann':
                     self._gui_do(('net', 'announce'), eventtime)
                 else:
+                    if kind == 'down':
+                        kind = 'down' if self._wifi_link() else 'up'
                     self._gui_do(('wifi', kind), eventtime)
                 return True
         return False
@@ -3931,14 +3941,23 @@ class ST7796:
         ops.append(lambda: self._gui_text(self.RAIL_W + 8, self.TOP_H + 6,
                                           self._kb_title[:28], COL_C3,
                                           COL_BG, 1))
-        shown = ('*' * len(self._kb_text) if self._kb_mode == 'psk'
+        shown = ('*' * len(self._kb_text)
+                 if self._kb_mode == 'psk' and not self._kb_show
                  else self._kb_text)
         ops.append(lambda: self.cmd_rect.send(
             [self.RAIL_W + 6, self.TOP_H + 24, self.width - self.RAIL_W - 12,
              26, self.gui_bar_bg]))
         ops.append(lambda: self._gui_text(
-            self.RAIL_W + 10, self.TOP_H + 30, shown[-30:], COL_WHITE,
+            self.RAIL_W + 10, self.TOP_H + 30, shown[-28:], COL_WHITE,
             self.gui_bar_bg, 1))
+        if self._kb_mode == 'psk':
+            bx, by, bw, bh = self._kb_eye_btn()
+            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self._gui_round(
+                bx, by, bw, bh, bg))
+            lab = "HIDE" if self._kb_show else "SHOW"
+            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, lab=lab:
+                       self._gui_text_center(bx, bw, by + (bh - 16) // 2,
+                                             lab, COL_WHITE, bg, 1))
         for (x, y, w, h, lab) in self._kb_cells():
             ops.append(lambda x=x, y=y, w=w, h=h: self._gui_round(
                 x, y, w, h, bg))
@@ -3997,6 +4016,12 @@ class ST7796:
                               else lab)
         self._gui_render(eventtime)
     def _kb_tap(self, sx, sy, eventtime):
+        if self._kb_mode == 'psk':
+            bx, by, bw, bh = self._kb_eye_btn()
+            if bx <= sx < bx + bw and by <= sy < by + bh:
+                self._kb_show = not self._kb_show
+                self._gui_render(eventtime)
+                return True
         for (x, y, w, h, lab) in self._kb_cells():
             if x <= sx < x + w and y <= sy < y + h:
                 self._kb_key(lab, eventtime)
@@ -4010,8 +4035,17 @@ class ST7796:
         self._kb_ssid = ssid
         self._kb_shift = False
         self._kb_sym = False
+        self._kb_show = False
         self.gui_screen = 'wifikey'
 
+    def _wifi_link(self):
+        try:
+            with open('/sys/class/net/wlan0/operstate') as f:
+                return f.read().strip() == 'up'
+        except Exception:
+            return False
+    def _kb_eye_btn(self):
+        return (self.width - 76, self.TOP_H + 24, 70, 26)
     # --- WiFi setup -------------------------------------------------------
     def _wifi_call(self, *args):
         if self._wifi_busy:
@@ -4506,6 +4540,10 @@ class ST7796:
                 self._gui_msg = "Disconnecting WiFi..."
                 self._gui_msg_until = now + 30.
                 self._wifi_call('down')
+            elif kind == 'up':
+                self._gui_msg = "Reconnecting to the saved network..."
+                self._gui_msg_until = now + 60.
+                self._wifi_call('up')
             else:
                 self._gui_msg = "Starting hotspot MINGDA_SETUP..."
                 self._gui_msg_until = now + 30.

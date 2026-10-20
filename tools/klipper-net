@@ -23,6 +23,16 @@ case "${1:-}" in
     [ $# -ge 2 ] || { echo "usage: forget <ssid>"; exit 2; }
     ${NM} connection delete id "$2" 2>&1 | tail -2
     ;;
+  up)
+    for c in MilkyWay24 $(${NM} -t -f NAME,TYPE connection show 2>/dev/null \
+                         | awk -F: '$2 ~ /wireless/ { print $1 }'); do
+        out=$(${NM} connection up id "$c" 2>&1); rc=$?
+        echo "$out" | tail -1
+        [ $rc -eq 0 ] && exit 0
+    done
+    echo "no saved network"
+    exit 1
+    ;;
   down)
     c=$(act)
     [ -n "$c" ] || { echo "not connected"; exit 0; }

@@ -212,6 +212,7 @@ def build(printing, paused=False):
     o._kb_ssid = ''
     o._kb_shift = False
     o._kb_sym = False
+    o._kb_show = False
     o._ext_steps, o._ext_step = (1.0, 5.0), 1.0
     o._gui_msg, o._gui_msg_until = None, 0.0
     o._t_hist = [(200, 60)] * 20
