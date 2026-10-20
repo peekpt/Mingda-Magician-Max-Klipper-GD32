@@ -312,6 +312,24 @@ layout change without touching the printer (needs Python + Pillow).
 
 ---
 
+## WiFi and hostname from the panel
+
+`More -> Network` can scan, connect, disconnect, start the emergency hotspot
+and rename the printer. The GUI runs as `mingda`, so it calls one small root
+helper - install it once:
+
+```bash
+sudo install -m 755 tools/klipper-net /usr/local/sbin/klipper-net
+echo 'mingda ALL=(root) NOPASSWD: /usr/local/sbin/klipper-net' \
+    | sudo tee /etc/sudoers.d/klipper-wifi
+sudo chmod 440 /etc/sudoers.d/klipper-wifi
+sudo visudo -c          # must say "parsed OK"
+```
+
+The keyboard that asks for the WiFi password also edits the hostname
+(`a-z`, `0-9`, `-`, up to 63 characters). Passwords are masked on screen and
+never written to the Klipper log.
+
 ## Hardware notes
 
 - **Host:** Raspberry Pi Zero 2 W, powered from the printer's 5 V rail and
