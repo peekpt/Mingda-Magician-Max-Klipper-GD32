@@ -1627,23 +1627,18 @@ class ST7796:
         return sum(self._eta_hist) / len(self._eta_hist)
 
     def _clock_text(self, eventtime):
-        # (text, colour): time to finish while printing, elapsed otherwise.
-        left = self._eta_left(eventtime)
-        if left is not None:
-            return ("%02d:%02d" % (int(left) // 3600, (int(left) // 60) % 60),
-                    COL_WARN)
+        # Time of day from the host (the Pi runs NTP). The print time and the
+        # ETA live on the print screen, so the bar stays a plain clock.
         try:
-            dur = int(self.printer.lookup_object('print_stats').get_status(
-                eventtime)['print_duration'])
+            return time.strftime('%H:%M'), COL_WHITE
         except Exception:
-            dur = 0
-        return ("%02d:%02d" % (dur // 3600, (dur // 60) % 60), COL_WHITE)
+            return "--:--", COL_DIM
 
     def _gui_clock(self, eventtime):
         # Minimal heartbeat while the display is muted: just the clock + the
         # hourglass (~60 bytes), so the screen does not look frozen.
         txt, col = self._clock_text(eventtime)
-        self._gui_text(self.width - 96, 7, txt, col, self.gui_bar_bg, 1)
+        self._gui_text(self.width - 68, 7, txt, col, self.gui_bar_bg, 1)
         self._draw_hourglass(True)
     # --- bed mesh probing map ---------------------------------------------
     def _mesh_hook(self):
