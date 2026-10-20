@@ -616,6 +616,8 @@ class ST7796:
         self._pid_done = False
         self._fil_lost = False
         self._notice = None
+        self._notice_icon = 'filnout'
+        self._ps_prev = None
         self._bstep_i = 1
         self._baby_dirty = False
         self._popup = None
@@ -1056,8 +1058,9 @@ class ST7796:
             return eventtime + 0.5
         try:
             self._fil_watch(eventtime)
+            self._print_watch(eventtime)
         except Exception:
-            logging.exception("st7796: filament watch failed")
+            logging.exception("st7796: watch failed")
         if self.gui and self._disp_quiet(eventtime):
             # Printer is homing/moving: stay off the link. During homing/probing
             # stay completely silent (trsync timing), otherwise send a tiny
@@ -3731,8 +3734,10 @@ class ST7796:
         y = self.TOP_H + (self.height - self.STRIP_H - self.TOP_H - h) // 2
         # plain square box, no outline
         ops.append(lambda: self.cmd_rect.send([x, y, w, h, bg]))
-        ops.append(lambda: self._gui_icon_at('filnout', x + (w - 56) // 2,
-                                             y + 8, COL_WARN, bg, 56))
+        icon = getattr(self, '_notice_icon', 'filnout')
+        icol = COL_OK if icon == 'check' else COL_WARN
+        ops.append(lambda icon=icon, icol=icol: self._gui_icon_at(
+            icon, x + (w - 56) // 2, y + 8, icol, bg, 56))
         for i, txt in enumerate(lines[:2]):
             ops.append(lambda i=i, txt=txt, x=x, w=w, y=y, bg=bg:
                        self._gui_text_center(x, w, y + 68 + i * 20, txt,
@@ -3772,6 +3777,34 @@ class ST7796:
                          'cancel': ('x48', COL_ERR)}[kind]
             self._btn_ops(ops, x, y, w, h, icon, kind.capitalize(),
                           accent=acc)
+    def _print_watch(self, eventtime):
+        # Finished / cancelled / failed: popup + beep (taps anywhere close it)
+        ps = self._print_status(eventtime)
+        if ps is None:
+            return
+        state = ps.get('state')
+        prev = self._ps_prev
+        self._ps_prev = state
+        if prev not in ('printing', 'paused'):
+            return
+        if state not in ('complete', 'cancelled', 'error'):
+            return
+        name = os.path.basename(ps.get('filename') or '')[:34]
+        if state == 'complete':
+            msg = ("Print finished", name)
+        elif state == 'cancelled':
+            msg = ("Print cancelled", name)
+        else:
+            msg = ("Print error", (ps.get('message') or name)[:40])
+        self._notice = msg
+        self._notice_icon = {'complete': 'check',
+                             'cancelled': 'x48'}.get(state, 'alert')
+        self._gui_msg = msg[0]
+        self._gui_msg_until = eventtime + 120.
+        self.gcode.respond_info("GUI: %s %s" % (msg[0], name))
+        if self.gui_beep:
+            self._gui_run_action("M300 S1200 P150\nM300 S1600 P250")
+        self._gui_render(eventtime)
     def _fil_watch(self, eventtime):
         # Runout while printing: Klipper pauses (pause_on_runout); show the
         # panel with the load/unload choices.
@@ -4263,6 +4296,7 @@ class ST7796:
                 self.gcode.respond_info("GUI: no filament - print blocked")
                 self._notice = ("No filament detected.",
                                 "Load it, then pick the file again.")
+                self._notice_icon = 'filnout'
                 self._gui_render(eventtime)
                 return
             fname = str(action[1]).replace('"', '')
