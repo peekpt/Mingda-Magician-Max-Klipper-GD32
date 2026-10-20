@@ -4128,11 +4128,15 @@ class ST7796:
                 x, y, w, h, bg))
             ops.append(lambda x=x, y=y, w=w, h=h, idx=idx: self.cmd_rect.send(
                 [x, y, 4, h, self._gc(idx)]))
-            ops.append(lambda x=x, y=y, ssid=ssid: self._gui_text(
-                x + 12, y + (h - 16) // 2, ssid[:28], COL_WHITE, bg, 1))
             tag = "%d%%%s" % (sig, ' *' if sec else '')
-            ops.append(lambda x=x, y=y, w=w, h=h, tag=tag: self._gui_text(
-                x + w - len(tag) * 8 - 8, y + (h - 16) // 2, tag,
+            sx_sig = x + w - len(tag) * 8 - 8
+            name = ssid[:26]
+            # centre the name between the colour stripe and the signal
+            tx = x + 12 + max(0, ((sx_sig - 8) - (x + 12) - len(name) * 8) // 2)
+            ops.append(lambda tx=tx, y=y, h=h, name=name: self._gui_text(
+                tx, y + (h - 16) // 2, name, COL_WHITE, bg, 1))
+            ops.append(lambda sx_sig=sx_sig, y=y, h=h, tag=tag: self._gui_text(
+                sx_sig, y + (h - 16) // 2, tag,
                 COL_C3 if sec else COL_C4, bg, 1))
         for (kind, x, y, w, h) in self._wifi_btns():
             ops.append(lambda x=x, y=y, w=w, h=h: self._gui_round(
