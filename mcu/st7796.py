@@ -3519,12 +3519,12 @@ class ST7796:
             host += '.local'
         info = {'ssid': '-', 'ip': '-', 'qual': -1, 'host': host}
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            try:
-                s.connect(('8.8.8.8', 80))
-                info['ip'] = s.getsockname()[0]
-            finally:
-                s.close()
+            out = subprocess.check_output(['hostname', '-I'], text=True,
+                                          timeout=3)
+            ips = [a for a in out.split()
+                   if ':' not in a and not a.startswith('127.')]
+            if ips:
+                info['ip'] = ips[0]
         except Exception:
             pass
         try:
@@ -3646,6 +3646,7 @@ class ST7796:
                         y0 + (i // 3) * 52, bw - 6, 46))
         return out
     def _net_view_ops(self, ops, eventtime):
+        self._gui_defer(eventtime, 3.0)      # keep SSID/IP/signal live
         info = self._net_info()
         ix0 = self.RAIL_W + 4
         ix1 = self.width - 8
@@ -4066,6 +4067,9 @@ class ST7796:
             except Exception as exc:
                 out = str(exc)
             self._wifi_busy = False
+            if args and args[0] in ('connect', 'open', 'down', 'up',
+                                    'hostname', 'forget'):
+                self._net_cache = None        # re-read SSID/IP at once
             if args and args[0] == 'scan':
                 nets, seen = [], set()
                 for line in out.splitlines():

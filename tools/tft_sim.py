@@ -282,6 +282,7 @@ def build(printing, paused=False):
     o._ic_ids, o._ic_bytes = {}, 0
     o._touch_evt = False
     o._gui_ops = None
+    o._gui_pending = None
     o._disp_quiet = lambda et: False
     return st, o, sim
 
