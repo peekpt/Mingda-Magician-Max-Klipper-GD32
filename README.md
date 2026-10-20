@@ -14,20 +14,16 @@ max (most of the time is the first controller flash).
 
 | | |
 |---|---|
-| ![Printing screen](images/panel_print.png) | ![Main menu](images/panel_main.png) |
-| Printing: object preview, live info list, pause/cancel | Main menu: calibrate, motors off, home |
-| ![Calibrate](images/panel_calibrate.png) | ![Z-Probe](images/panel_zcalibrate.png) |
-| Calibrate: every tuning screen in one place | Z-Probe: step toggle, start / apply / save / cancel |
-| ![Leveling](images/panel_level.png) | ![Adjust](images/panel_adjust.png) |
-| Bed leveling (ABL) with a live probe map | Manually adjust any mesh point |
-| ![Advanced](images/panel_advanced.png) | ![Limits](images/panel_limits.png) |
-| Advanced: pressure advance, smooth time, input shaper | Machine limits: speed, acceleration, … |
-| ![PID](images/panel_pid.png) | ![Info](images/panel_info.png) |
-| PID tuning with a live temperature graph | Info: release, Klipper, Mainsail, kernel |
-| ![Filament runout](images/panel_filament_runout.png) | ![No filament](images/panel_no_filament.png) |
-| Filament runout: unload / load, resume, cancel | Warning when a print starts without filament |
-| ![Boot splash](images/splash.png) | ![More](images/panel_more.png) |
-| Boot splash (drawn by the printer board) | More: save config, filament sensor, network, beeps |
+| ![Print screen](images/panel_print.png)<br>**Print** — object preview, position, ENDS time, pause/cancel | ![Main menu](images/panel_main.png)<br>**Main** — every screen one tap away |
+| ![Calibrate](images/panel_calibrate.png)<br>**Calibrate** — all the tuning screens in one place | ![Auto Bed Level](images/panel_level.png)<br>**Auto Bed Level** — live probe map |
+| ![Adjust](images/panel_adjust.png)<br>**Adjust** — nudge any mesh point, save to the config | ![Z-Probe](images/panel_zcalibrate.png)<br>**Z-Probe** — 0.005…1 mm steps, start/apply/save/cancel |
+| ![Advanced](images/panel_advanced.png)<br>**Advanced** — pressure advance, smoothing, input shaper | ![Limits](images/panel_limits.png)<br>**Limits** — speed, acceleration, square corner |
+| ![PID](images/panel_pid.png)<br>**PID** — live temperature graph, save or abort | ![Info](images/panel_info.png)<br>**Info** — release, Klipper, Mainsail, kernel, licence |
+| ![Filament runout](images/panel_filament_runout.png)<br>**Filament runout** — unload/load, resume, cancel | ![No filament](images/panel_no_filament.png)<br>**No filament** — warning before a print starts |
+| ![Move](images/panel_move.png)<br>**Move** — jog any axis, steps from 0.1 to 50 mm | ![Temperature](images/panel_temperature.png)<br>**Temperature** — material presets and manual set |
+| ![Extruder](images/panel_extrude.png)<br>**Extruder** — load/unload filament, extrude | ![Filament](images/panel_filament.png)<br>**Filament** — eject/insert, live baby stepping |
+| ![More](images/panel_more.png)<br>**More** — save config, filament sensor, network, beep | ![Power](images/panel_estop.png)<br>**Power** — emergency stop, restart, host shutdown |
+| ![Adjust popup](images/panel_popup.png)<br>**Adjust popup** — −, +, step toggle and save | ![Boot splash](images/splash.png)<br>**Boot splash** — the Mingda mark, drawn by the board |
 
 ---
 
