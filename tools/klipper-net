@@ -1,0 +1,47 @@
+#!/bin/sh
+# WiFi / hostname helper for the ST7796 panel GUI.
+# Called through sudo by the klippy user; keep it small and non-interactive.
+set -u
+NM=/usr/bin/nmcli
+act() {   # name of the connection currently on wlan0
+    ${NM} -t -f NAME,DEVICE connection show --active 2>/dev/null \
+        | awk -F: '$2 == "wlan0" { print $1; exit }'
+}
+case "${1:-}" in
+  scan)
+    ${NM} -t -f SSID,SIGNAL,SECURITY device wifi list 2>&1
+    ;;
+  connect)
+    [ $# -ge 3 ] || { echo "usage: connect <ssid> <psk>"; exit 2; }
+    ${NM} device wifi connect "$2" password "$3" 2>&1 | tail -2
+    ;;
+  open)
+    [ $# -ge 2 ] || { echo "usage: open <ssid>"; exit 2; }
+    ${NM} device wifi connect "$2" 2>&1 | tail -2
+    ;;
+  forget)
+    [ $# -ge 2 ] || { echo "usage: forget <ssid>"; exit 2; }
+    ${NM} connection delete id "$2" 2>&1 | tail -2
+    ;;
+  down)
+    c=$(act)
+    [ -n "$c" ] || { echo "not connected"; exit 0; }
+    ${NM} connection down id "$c" 2>&1 | tail -1
+    ;;
+  hotspoton)
+    ${NM} connection up MINGDA_SETUP 2>&1 | tail -1
+    ;;
+  hostname)
+    [ $# -ge 2 ] || { echo "usage: hostname <name>"; exit 2; }
+    case "$2" in
+      *[!a-z0-9-]*|'') echo "only a-z, 0-9 and -"; exit 2 ;;
+    esac
+    hostnamectl set-hostname "$2" 2>&1 || exit 1
+    sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$2/" /etc/hosts 2>/dev/null
+    echo "hostname: $2"
+    ;;
+  *)
+    echo "usage: klipper-net scan|connect|open|forget|down|hotspoton|hostname"
+    exit 2
+    ;;
+esac

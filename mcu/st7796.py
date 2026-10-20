@@ -225,7 +225,8 @@ GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filament',
               'estop': 'Confirm', 'mesh': 'Auto Bed Level', 'probe': 'Z-Probe',
               'meshadj': 'Adjust', 'advanced': 'Advanced',
               'limits': 'Limits', 'calibrate': 'Calibrate', 'pid': 'PID',
-              'info': 'Info', 'filout': 'Filament'}
+              'info': 'Info', 'filout': 'Filament',
+              'wifilist': 'WiFi', 'wifikey': 'WiFi'}
 
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
 ICON = 0x100
@@ -618,6 +619,18 @@ class ST7796:
         self._notice = None
         self._notice_icon = 'filnout'
         self._ps_prev = None
+        # WiFi setup / on-screen keyboard
+        self._wifi_nets = []
+        self._wifi_page = 0
+        self._wifi_busy = False
+        self._wifi_out = None
+        self._kb_text = ''
+        self._kb_title = ''
+        self._kb_mode = 'text'
+        self._kb_back = 'network'
+        self._kb_ssid = ''
+        self._kb_shift = False
+        self._kb_sym = False
         self._bstep_i = 1
         self._baby_dirty = False
         self._popup = None
@@ -1500,7 +1513,9 @@ class ST7796:
     def _gui_rail(self):
         back = {'meshadj': 'mesh', 'advanced': 'calibrate',
                 'limits': 'calibrate', 'pid': 'calibrate',
-                'info': 'more', 'filout': 'print'}.get(self.gui_screen)
+                'info': 'more', 'filout': 'print',
+                'wifilist': 'network', 'wifikey': 'network'}.get(
+                    self.gui_screen)
         if back is None:
             back = ('scr', 'print') if self.gui_screen in ('ptune',
                                                            'filament') \
@@ -3310,6 +3325,10 @@ class ST7796:
             self._info_view_ops(ops, eventtime)
         elif self.gui_screen == 'filout':
             self._filout_view_ops(ops, eventtime)
+        elif self.gui_screen == 'wifilist':
+            self._wifi_view_ops(ops, eventtime)
+        elif self.gui_screen == 'wifikey':
+            self._kb_view_ops(ops, eventtime)
         g = self.gui_btn_gap
         i2 = g // 2
         for (x, y, w, h, idx, item) in self._gui_buttons():
@@ -3487,8 +3506,14 @@ class ST7796:
         if self._net_cache is not None and now - self._net_t < 10.:
             return self._net_cache
         self._net_t = now
-        info = {'ssid': '-', 'ip': '-', 'qual': -1,
-                'host': socket.gethostname() + '.local'}
+        try:
+            with open('/proc/sys/kernel/hostname') as f:
+                host = f.read().strip() or socket.gethostname()
+        except Exception:
+            host = socket.gethostname()
+        if not host.endswith('.local'):
+            host += '.local'
+        info = {'ssid': '-', 'ip': '-', 'qual': -1, 'host': host}
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
@@ -3603,29 +3628,51 @@ class ST7796:
             ops.append(lambda bx=bx, by=by, bw2=bw2, bh2=bh2, accent=accent:
                        self.cmd_rect.send([bx + 10, by + bh2 - 9, bw2 - 20, 5,
                                            accent]))
+    _NET_BTNS = (('scan', 'refresh', 'Scan'), ('down', 'power', 'Disconnect'),
+                 ('hotspot', 'network', 'Hotspot'),
+                 ('host', 'settings', 'Hostname'),
+                 ('ann', 'network', 'Announce'), ('back', 'back', 'Back'))
+    def _net_btns(self):
+        bw = (self.width - self.RAIL_W - 8) // 3
+        y0 = self.height - self.STRIP_H - 106
+        x0 = self.RAIL_W + 4
+        out = []
+        for i, (kind, icon, lab) in enumerate(self._NET_BTNS):
+            out.append((kind, icon, lab, x0 + (i % 3) * bw,
+                        y0 + (i // 3) * 52, bw - 6, 46))
+        return out
     def _net_view_ops(self, ops, eventtime):
         info = self._net_info()
-        bw = (self.width - self.RAIL_W) // 4
-        ix0 = self.RAIL_W + 2
-        ix1 = self.RAIL_W + 2 * bw - 6
-        iy0 = self.TOP_H
+        ix0 = self.RAIL_W + 4
+        ix1 = self.width - 8
         q = info['qual']
         lines = [
-            ("SSID", str(info['ssid'])[:18], COL_C1),
+            ("SSID", str(info['ssid'])[:20], COL_C1),
             ("IP", str(info['ip']), COL_C3),
-            ("Sinal", ("%d%%" % q) if q >= 0 else "-", COL_C4),
+            ("Signal", ("%d%%" % q) if q >= 0 else "-", COL_C4),
             ("Host", str(info['host']), COL_C2),
-            ("Porta", "7125 (Moonraker)", COL_ACTIVE),
+            ("Port", "7125 (Moonraker)", COL_ACTIVE),
         ]
-        line_h = max(26, (self.height - self.STRIP_H - iy0 - 30)
+        y0 = self.TOP_H
+        line_h = max(26, (self.height - self.STRIP_H - y0 - 120)
                      // max(1, len(lines)))
         for i, (lab, val, col) in enumerate(lines):
-            self._info_line(ops, ix0, iy0 + i * line_h, ix1, lab, val, col)
-        for (x, y, w, h, idx, item) in self._gui_buttons():
-            if idx == 2:
-                self._btn_ops(ops, x, y, w, h, 'network', "Anunciar")
-            elif idx == 3:
-                self._btn_ops(ops, x, y, w, h, 'back', "Back")
+            self._info_line(ops, ix0, y0 + i * line_h, ix1, lab, val, col)
+        for (kind, icon, lab, x, y, w, h) in self._net_btns():
+            self._btn_ops(ops, x, y, w, h, icon, lab)
+    def _net_tap(self, sx, sy, eventtime):
+        for (kind, icon, lab, x, y, w, h) in self._net_btns():
+            if x <= sx < x + w and y <= sy < y + h:
+                if kind == 'back':
+                    self._gui_do(('scr', 'more'), eventtime)
+                elif kind == 'host':
+                    self._gui_do(('kbhost',), eventtime)
+                elif kind == 'ann':
+                    self._gui_do(('net', 'announce'), eventtime)
+                else:
+                    self._gui_do(('wifi', kind), eventtime)
+                return True
+        return False
     _PTUNE = ('flow', 'speed', 'fan')
     def _ptune_value(self, eventtime):
         try:
@@ -3849,6 +3896,246 @@ class ST7796:
         if self.gui_screen != 'filout':
             self.gui_screen = 'filout'
             self._gui_render(eventtime)
+    # --- on-screen keyboard ----------------------------------------------
+    _KB_LETTERS = (list('qwertyuiop'),
+                   list('asdfghjkl') + ['BK'],
+                   ['SH'] + list('zxcvbnm') + ['SY', '.'])
+    _KB_SYMBOLS = (list('1234567890'),
+                   list('-_.@#!$%&*'),
+                   ['SH'] + list('+/:;=,?()') + ['AB'])
+    def _kb_rows(self):
+        return self._KB_SYMBOLS if self._kb_sym else self._KB_LETTERS
+    def _kb_cells(self):
+        cw = (self.width - self.RAIL_W) // 10
+        ch, y0 = 46, self.TOP_H + 58
+        out = []
+        for r, row in enumerate(self._kb_rows()):
+            for c, lab in enumerate(row):
+                out.append((self.RAIL_W + c * cw + 2, y0 + r * ch + 2,
+                            cw - 4, ch - 4, lab))
+        y = y0 + 3 * ch
+        out.append((self.RAIL_W + 2, y + 2, 4 * cw - 4, ch - 4, 'SPACE'))
+        out.append((self.RAIL_W + 4 * cw + 2, y + 2, 3 * cw - 4, ch - 4,
+                    'CANCEL'))
+        out.append((self.RAIL_W + 7 * cw + 2, y + 2, 3 * cw - 4, ch - 4,
+                    'OK'))
+        return out
+    def _kb_disp(self, lab):
+        if lab in ('BK', 'SH', 'SY', 'AB'):
+            return {'BK': '<-', 'SH': 'SH', 'SY': '1#?', 'AB': 'abc'}[lab]
+        if lab in ('SPACE', 'CANCEL', 'OK'):
+            return lab
+        return lab.upper() if self._kb_shift and lab.isalpha() else lab
+    def _kb_view_ops(self, ops, eventtime):
+        bg = self.gui_btn_bg
+        ops.append(lambda: self._gui_text(self.RAIL_W + 8, self.TOP_H + 6,
+                                          self._kb_title[:28], COL_C3,
+                                          COL_BG, 1))
+        shown = ('*' * len(self._kb_text) if self._kb_mode == 'psk'
+                 else self._kb_text)
+        ops.append(lambda: self.cmd_rect.send(
+            [self.RAIL_W + 6, self.TOP_H + 24, self.width - self.RAIL_W - 12,
+             26, self.gui_bar_bg]))
+        ops.append(lambda: self._gui_text(
+            self.RAIL_W + 10, self.TOP_H + 30, shown[-30:], COL_WHITE,
+            self.gui_bar_bg, 1))
+        for (x, y, w, h, lab) in self._kb_cells():
+            ops.append(lambda x=x, y=y, w=w, h=h: self._gui_round(
+                x, y, w, h, bg))
+            txt = self._kb_disp(lab)
+            ops.append(lambda x=x, y=y, w=w, h=h, txt=txt:
+                       self._gui_text_center(x, w, y + (h - 16) // 2, txt,
+                                             COL_WHITE, bg, 1))
+            if lab == 'OK':
+                ops.append(lambda x=x, y=y, w=w, h=h: self.cmd_rect.send(
+                    [x + 8, y + h - 7, w - 16, 4, COL_OK]))
+            elif lab == 'CANCEL':
+                ops.append(lambda x=x, y=y, w=w, h=h: self.cmd_rect.send(
+                    [x + 8, y + h - 7, w - 16, 4, COL_ERR]))
+    def _kb_apply(self, eventtime):
+        if self._kb_mode == 'psk':
+            psk = self._kb_text
+            if len(psk) < 8:
+                self._gui_warn("Password needs 8+ characters")
+                return
+            self.gui_screen = 'network'
+            self._gui_render(eventtime)
+            self._gui_msg = "Connecting to %s..." % self._kb_ssid
+            self._gui_msg_until = eventtime + 60.
+            self._wifi_call('connect', self._kb_ssid, psk)
+            return
+        name = self._kb_text.strip().lower()
+        if not name or len(name) > 63 or any(
+                c not in 'abcdefghijklmnopqrstuvwxyz0123456789-'
+                for c in name):
+            self._gui_warn("Hostname: a-z, 0-9 and - only")
+            return
+        self.gui_screen = 'network'
+        self._gui_render(eventtime)
+        self._gui_msg = "Hostname -> %s" % name
+        self._gui_msg_until = eventtime + 30.
+        self._wifi_call('hostname', name)
+    def _kb_key(self, lab, eventtime):
+        if lab == 'BK':
+            self._kb_text = self._kb_text[:-1]
+        elif lab == 'SH':
+            self._kb_shift = not self._kb_shift
+        elif lab == 'SY':
+            self._kb_sym = True
+        elif lab == 'AB':
+            self._kb_sym = False
+        elif lab == 'SPACE':
+            if len(self._kb_text) < 63:
+                self._kb_text += ' '
+        elif lab == 'CANCEL':
+            self.gui_screen = self._kb_back
+        elif lab == 'OK':
+            self._kb_apply(eventtime)
+            return
+        elif len(self._kb_text) < 63:
+            self._kb_text += (lab.upper() if (self._kb_shift and lab.isalpha())
+                              else lab)
+        self._gui_render(eventtime)
+    def _kb_tap(self, sx, sy, eventtime):
+        for (x, y, w, h, lab) in self._kb_cells():
+            if x <= sx < x + w and y <= sy < y + h:
+                self._kb_key(lab, eventtime)
+                return True
+        return False
+    def _kb_open(self, mode, title, init, back, ssid=''):
+        self._kb_mode = mode
+        self._kb_title = title
+        self._kb_text = init
+        self._kb_back = back
+        self._kb_ssid = ssid
+        self._kb_shift = False
+        self._kb_sym = False
+        self.gui_screen = 'wifikey'
+
+    # --- WiFi setup -------------------------------------------------------
+    def _wifi_call(self, *args):
+        if self._wifi_busy:
+            self._gui_warn("Network busy - wait")
+            return
+        self._wifi_busy = True
+        self._wifi_out = None
+        self._gui_pending = time.monotonic() + 0.3
+
+        def _run():
+            out, ok = '', False
+            try:
+                r = subprocess.run(
+                    ['sudo', '-n', '/usr/local/sbin/klipper-net'] + list(args),
+                    capture_output=True, text=True, timeout=60)
+                out = ((r.stdout or '') + (r.stderr or '')).strip()
+                ok = r.returncode == 0
+            except Exception as exc:
+                out = str(exc)
+            self._wifi_busy = False
+            if args and args[0] == 'scan':
+                nets, seen = [], set()
+                for line in out.splitlines():
+                    parts = line.rsplit(':', 2)
+                    if len(parts) != 3 or not parts[0]:
+                        continue
+                    ssid, sig, sec = parts
+                    try:
+                        sig = int(sig)
+                    except ValueError:
+                        sig = 0
+                    if ssid in seen:
+                        continue
+                    seen.add(ssid)
+                    nets.append((ssid, sig, sec not in ('', '--')))
+                nets.sort(key=lambda n: -n[1])
+                self._wifi_nets = nets
+                self._wifi_page = 0
+            elif args and args[0] in ('connect', 'open'):
+                self._notice = (("WiFi connected" if ok else "WiFi failed"),
+                                args[1] if ok else out[:40])
+                self._notice_icon = 'check' if ok else 'alert'
+                self._gui_msg = ("Connected: %s" % args[1]) if ok else out[:60]
+                self._gui_msg_until = time.monotonic() + 60.
+            elif args and args[0] == 'hostname':
+                self._notice = (("Hostname set" if ok else "Hostname failed"),
+                                args[1] if ok else out[:40])
+                self._notice_icon = 'check' if ok else 'alert'
+                self._gui_msg = ("Hostname: %s" % args[1]) if ok else out[:60]
+                self._gui_msg_until = time.monotonic() + 30.
+            self._gui_pending = time.monotonic() + 0.3
+        threading.Thread(target=_run, daemon=True).start()
+    def _wifi_rows(self):
+        per = 5
+        start = self._wifi_page * per
+        rows = []
+        for i, (ssid, sig, sec) in enumerate(self._wifi_nets[start:start + per]):
+            rows.append((self.RAIL_W + 4, self.TOP_H + 6 + i * 36,
+                         self.width - self.RAIL_W - 8, 34,
+                         start + i, ssid, sig, sec))
+        return rows
+    def _wifi_btns(self):
+        bw = (self.width - self.RAIL_W) // 4
+        y = self.height - self.STRIP_H - 52
+        return [('up', self.RAIL_W + 2, y, bw - 4, 46),
+                ('down', self.RAIL_W + bw + 2, y, bw - 4, 46),
+                ('back', self.RAIL_W + 2 * bw + 2, y, 2 * bw - 4, 46)]
+    def _wifi_view_ops(self, ops, eventtime):
+        bg = self.gui_btn_bg
+        if self._wifi_busy:
+            ops.append(lambda: self._gui_text_center(
+                self.RAIL_W, self.width - self.RAIL_W,
+                self.TOP_H + 60, "scanning...", COL_WARN, COL_BG, 2))
+        elif not self._wifi_nets:
+            ops.append(lambda: self._gui_text_center(
+                self.RAIL_W, self.width - self.RAIL_W,
+                self.TOP_H + 60, "no networks", COL_DIM2, COL_BG, 2))
+        for (x, y, w, h, idx, ssid, sig, sec) in self._wifi_rows():
+            ops.append(lambda x=x, y=y, w=w, h=h: self._gui_round(
+                x, y, w, h, bg))
+            ops.append(lambda x=x, y=y, w=w, h=h, idx=idx: self.cmd_rect.send(
+                [x, y, 4, h, self._gc(idx)]))
+            ops.append(lambda x=x, y=y, ssid=ssid: self._gui_text(
+                x + 12, y + (h - 16) // 2, ssid[:28], COL_WHITE, bg, 1))
+            tag = "%d%%%s" % (sig, ' *' if sec else '')
+            ops.append(lambda x=x, y=y, w=w, h=h, tag=tag: self._gui_text(
+                x + w - len(tag) * 8 - 8, y + (h - 16) // 2, tag,
+                COL_C3 if sec else COL_C4, bg, 1))
+        for (kind, x, y, w, h) in self._wifi_btns():
+            ops.append(lambda x=x, y=y, w=w, h=h: self._gui_round(
+                x, y, w, h, bg))
+            if kind == 'back':
+                ops.append(lambda x=x, y=y, w=w, h=h: self._gui_text_center(
+                    x, w, y + (h - 16) // 2, "Back", COL_WHITE, bg, 1))
+            else:
+                iw = (self._icon_at(kind, 20) or (0, 0))[0]
+                ops.append(lambda x=x, y=y, w=w, h=h, kind=kind, iw=iw:
+                           self._gui_icon_at(kind, x + (w - iw) // 2,
+                                             y + (h - 20) // 2, COL_WHITE,
+                                             bg, 20))
+    def _wifi_tap(self, sx, sy, eventtime):
+        for (x, y, w, h, idx, ssid, sig, sec) in self._wifi_rows():
+            if x <= sx < x + w and y <= sy < y + h:
+                if sec:
+                    self._kb_open('psk', 'password for ' + ssid, '',
+                                  'wifilist', ssid)
+                    self._gui_render(eventtime)
+                else:
+                    self._gui_msg = "Connecting to %s..." % ssid
+                    self._gui_msg_until = eventtime + 60.
+                    self._wifi_call('open', ssid)
+                return True
+        for (kind, x, y, w, h) in self._wifi_btns():
+            if x <= sx < x + w and y <= sy < y + h:
+                if kind == 'up' and self._wifi_page > 0:
+                    self._wifi_page -= 1
+                elif kind == 'down' and (self._wifi_page + 1) * 5 < len(
+                        self._wifi_nets):
+                    self._wifi_page += 1
+                elif kind == 'back':
+                    self.gui_screen = 'network'
+                self._gui_render(eventtime)
+                return True
+        return False
     # --- Info -------------------------------------------------------------
     def _info_lines(self, eventtime):
         out = [("Release", str(self.gui_version or '-'), COL_C1)]
@@ -4207,6 +4494,25 @@ class ST7796:
                 self.printer.get_reactor().monotonic() + 20.)
             self._baby_dirty = False
             script = 'Z_OFFSET_APPLY_PROBE\nSAVE_CONFIG'
+        elif isinstance(action, tuple) and action[0] == 'wifi':
+            kind = action[1]
+            if kind == 'scan':
+                self._wifi_nets = []
+                self._wifi_page = 0
+                self.gui_screen = 'wifilist'
+                self._gui_render(eventtime)
+                self._wifi_call('scan')
+            elif kind == 'down':
+                self._gui_msg = "Disconnecting WiFi..."
+                self._gui_msg_until = now + 30.
+                self._wifi_call('down')
+            else:
+                self._gui_msg = "Starting hotspot MINGDA_SETUP..."
+                self._gui_msg_until = now + 30.
+                self._wifi_call('hotspoton')
+        elif isinstance(action, tuple) and action[0] == 'kbhost':
+            self._kb_open('text', 'hostname', socket.gethostname(), 'network')
+            self._gui_render(eventtime)
         elif isinstance(action, tuple) and action[0] == 'filo':
             kind = action[1]
             if kind == 'resume':
@@ -4452,6 +4758,12 @@ class ST7796:
                     self.gcode.respond_info("GUI nivelar: CANCELAR")
                     self._gui_do(('scr', 'print'), eventtime)
                 return
+        if self.gui_screen == 'wifikey':
+            if self._kb_tap(sx, sy, eventtime):
+                return
+        if self.gui_screen == 'wifilist':
+            if self._wifi_tap(sx, sy, eventtime):
+                return
         if self.gui_screen == 'filout':
             for (kind, x, y, w, h) in self._filout_btns():
                 if x <= sx < x + w and y <= sy < y + h:
@@ -4477,14 +4789,8 @@ class ST7796:
                     self._gui_do(('zp', kind), eventtime)
                     return
         if self.gui_screen == 'network':
-            for (x, y, w, h, idx, item) in self._gui_buttons():
-                if x <= sx < x + w and y <= sy < y + h:
-                    if idx == 2:
-                        self.gcode.respond_info("GUI: Anunciar")
-                        self._gui_do(('net', 'announce'), eventtime)
-                    elif idx == 3:
-                        self._gui_do(('scr', 'more'), eventtime)
-                    return
+            if self._net_tap(sx, sy, eventtime):
+                return
         if self.gui_screen == 'print':
             if self._print_view(eventtime):
                 ps = self._print_status(eventtime) or {}
