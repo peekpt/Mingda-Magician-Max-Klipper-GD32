@@ -455,8 +455,8 @@ DECL_COMMAND(command_tft_touch_cfg, "tft_touch_cfg threshold=%hu period=%hu");
 // ---------------------------------------------------------------------------
 // Host watchdog: the host pings every few seconds; if the serial link goes
 // quiet for 20 s the Pi is dead (or crashed) and we say so on the panel.
-static uint32_t wd_last;
-static uint8_t wd_armed, wd_shown;
+static uint32_t wd_last, wd_chk;
+static uint8_t wd_armed, wd_shown, wd_miss;
 
 void
 tft_host_lost(void)
@@ -475,6 +475,7 @@ command_tft_ping(uint32_t *args)
     wd_last = timer_read_time();
     wd_armed = 1;
     wd_shown = 0;
+    wd_miss = 0;
 }
 DECL_COMMAND(command_tft_ping, "tft_ping");
 
@@ -482,10 +483,22 @@ void
 tft_touch_task(void)
 {
     uint32_t now = timer_read_time();
+    // The 32 bit tick counter runs at the 168 MHz timer clock, so a single
+    // comparison is only safe below ~12 s. Count 6 s windows instead: four
+    // of them (24 s) without a ping means the host is gone.
     if (wd_armed && !wd_shown
-        && timer_is_before(wd_last + timer_from_us(20000000), now)) {
-        wd_shown = 1;
-        tft_host_lost();
+        && timer_is_before(wd_chk + timer_from_us(1000000), now)) {
+        wd_chk = now;
+        if (timer_is_before(wd_last + timer_from_us(6000000), now)) {
+            wd_last = now;
+            if (++wd_miss >= 4) {
+                wd_miss = 0;
+                wd_shown = 1;
+                tft_host_lost();
+            }
+        } else {
+            wd_miss = 0;
+        }
     }
     if (timer_is_before(now, touch_next))
         return;

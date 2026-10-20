@@ -1064,14 +1064,21 @@ class ST7796:
             self._print_watch(eventtime)
         except Exception:
             logging.exception("st7796: watch failed")
-        if self.cmd_ping is not None and eventtime >= self._ping_next:
+        if self.cmd_ping is None:
+            if not getattr(self, '_ping_warned', False):
+                self._ping_warned = True
+                logging.warning("st7796: MCU has no tft_ping - watchdog off")
+        elif eventtime >= self._ping_next:
             # tiny command (2 bytes), sent even while the panel is muted, so
             # the MCU can tell the Pi is still alive
             self._ping_next = eventtime + 3.
+            if not getattr(self, '_ping_logged', False):
+                self._ping_logged = True
+                logging.info("st7796: tft_ping enviado (watchdog MCU)")
             try:
                 self.cmd_ping.send([])
             except Exception:
-                pass
+                logging.exception("st7796: tft_ping falhou")
         if self.gui and self._disp_quiet(eventtime):
             # Printer is homing/moving: stay off the link. During homing/probing
             # stay completely silent (trsync timing), otherwise send a tiny
