@@ -2391,18 +2391,28 @@ class ST7796:
             tx += len(txt) * 8 + 4
         ops.append(lambda px=px, ly=ly, ttxt=ttxt: self._gui_text(
             px, ly + 18, ttxt, COL_ACTIVE, COL_BG, 1))
-        # layer / time-to-finish to the right of the position
-        mx = px + 156
-        my = ly
-        if ltxt:
-            ops.append(lambda mx=mx, my=my, ltxt=ltxt: self._gui_text(
-                mx, my, ltxt, COL_C3, COL_BG, 1))
         left = self._eta_left(eventtime)
+        # estimated wall-clock finish, next to the position
+        if left is not None:
+            try:
+                etxt = time.strftime(
+                    'ENDS %H:%M', time.localtime(time.time() + left))
+            except Exception:
+                etxt = None
+            if etxt:
+                ops.append(lambda etxt=etxt: self._gui_text(
+                    px + 156, ly, etxt, COL_C4, COL_BG, 1))
+        # time / left / layer on the second line
+        mx = px + 80
+        my = ly + 18
         if left is not None:
             ftxt = "LEFT %d:%02d" % (int(left) // 3600,
                                       (int(left) // 60) % 60)
             ops.append(lambda mx=mx, my=my, ftxt=ftxt: self._gui_text(
-                mx, my + 18, ftxt, COL_WARN, COL_BG, 1))
+                mx, my, ftxt, COL_WARN, COL_BG, 1))
+        if ltxt:
+            ops.append(lambda px=px, my=my, ltxt=ltxt: self._gui_text(
+                px + 160, my, ltxt, COL_C3, COL_BG, 1))
 
     # --- Avancadas / Limites: 2x2 cards + GRAVAR ---------------------------
     def _card_rects(self):
