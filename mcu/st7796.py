@@ -762,6 +762,9 @@ class ST7796:
         self.cmd_tcfg = self.mcu.try_lookup_command(
             "tft_touch_cfg threshold=%hu period=%hu")
         self.cmd_splash = self.mcu.try_lookup_command("tft_splash")
+        # HOST LOST watchdog on the MCU: ping it every few seconds
+        self.cmd_ping = self.mcu.try_lookup_command("tft_ping")
+        self._ping_next = 0.
         self.cmd_ireset = self.mcu.try_lookup_command("tft_ireset")
         if None in (self.cmd_cmd, self.cmd_data, self.cmd_rect, self.cmd_char):
             logging.info("st7796: MCU has no tft_* commands (flash the display"
@@ -1061,6 +1064,14 @@ class ST7796:
             self._print_watch(eventtime)
         except Exception:
             logging.exception("st7796: watch failed")
+        if self.cmd_ping is not None and eventtime >= self._ping_next:
+            # tiny command (2 bytes), sent even while the panel is muted, so
+            # the MCU can tell the Pi is still alive
+            self._ping_next = eventtime + 3.
+            try:
+                self.cmd_ping.send([])
+            except Exception:
+                pass
         if self.gui and self._disp_quiet(eventtime):
             # Printer is homing/moving: stay off the link. During homing/probing
             # stay completely silent (trsync timing), otherwise send a tiny

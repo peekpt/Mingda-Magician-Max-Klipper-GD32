@@ -20,6 +20,7 @@
 #include "generic/armcm_timer.h" // udelay
 #include "font8x14.h"
 #include "splash.h"
+#include "hostlost.h"
 
 #define TFT_REG (*(volatile uint16_t *)0x60FFFFFEUL) // RS low  (A23=0)
 #define TFT_RAM (*(volatile uint16_t *)0x61000000UL) // RS high (A23=1)
@@ -451,10 +452,41 @@ command_tft_touch_cfg(uint32_t *args)
 }
 DECL_COMMAND(command_tft_touch_cfg, "tft_touch_cfg threshold=%hu period=%hu");
 
+// ---------------------------------------------------------------------------
+// Host watchdog: the host pings every few seconds; if the serial link goes
+// quiet for 20 s the Pi is dead (or crashed) and we say so on the panel.
+static uint32_t wd_last;
+static uint8_t wd_armed, wd_shown;
+
+void
+tft_host_lost(void)
+{
+    tft_rect(0, 0, 480, 320, 0x10C3);
+    tft_rect(0, 92, 480, 2, 0xEB20);
+    tft_bmp((480 - HLOST_TITLE_W) / 2, 110, HLOST_TITLE_W, HLOST_TITLE_H,
+            0xEB20, 0x10C3, hlost_title, sizeof(hlost_title));
+    tft_bmp((480 - HLOST_SUB_W) / 2, 176, HLOST_SUB_W, HLOST_SUB_H,
+            0xFFFF, 0x10C3, hlost_sub, sizeof(hlost_sub));
+}
+
+void
+command_tft_ping(uint32_t *args)
+{
+    wd_last = timer_read_time();
+    wd_armed = 1;
+    wd_shown = 0;
+}
+DECL_COMMAND(command_tft_ping, "tft_ping");
+
 void
 tft_touch_task(void)
 {
     uint32_t now = timer_read_time();
+    if (wd_armed && !wd_shown
+        && timer_is_before(wd_last + timer_from_us(20000000), now)) {
+        wd_shown = 1;
+        tft_host_lost();
+    }
     if (timer_is_before(now, touch_next))
         return;
     touch_next = now + timer_from_us(touch_period);
