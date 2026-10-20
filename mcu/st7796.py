@@ -67,7 +67,7 @@ GUI_SCREENS = {
     ],
     # Tuning menus that used to live in main / Extrude / More.
     'calibrate': [
-        ("Mesh", "bedmesh", ('scr', 'mesh')),
+        ("Auto Level", "bedmesh", ('scr', 'mesh')),
         ("Z-Probe", "zprobe", ('scr', 'probe')),
         ("Limits", "limits", ('scr', 'limits')),
         ("Advanced", "cog", ('scr', 'advanced')),
@@ -1865,18 +1865,15 @@ class ST7796:
         armed = running and eventtime < self._mesh_arm
         # manual point adjustment (only when the printer is not leveling)
         ax, ay, aw, ah = self._mesh_adj_btn()
-        alab, afg, abg = (("Auto Bed Level", COL_DIM, self.gui_btn_bg)
-                          if running
-                          else ("Auto Bed Level", COL_WHITE,
-                                self.gui_btn_bg))
+        alab, afg, abg = (("ADJUST", COL_DIM, self.gui_btn_bg) if running
+                          else ("ADJUST", COL_WHITE, self.gui_btn_bg))
         ops.append(lambda ax=ax, ay=ay, aw=aw, ah=ah, abg=abg:
                    self._gui_round(ax, ay, aw, ah, abg))
+        ops.append(lambda ax=ax, ay=ay, aw=aw, afg=afg, abg=abg:
+                   self._gui_icon_at('cog', ax + 12, ay + 7, afg, abg, 28))
         ops.append(lambda ax=ax, ay=ay, aw=aw, ah=ah, alab=alab, afg=afg,
                    abg=abg: self._gui_text_center(
                        ax, aw, ay + (ah - 16) // 2, alab, afg, abg, 1))
-        # orange underline, like the other action buttons
-        ops.append(lambda ax=ax, ay=ay, aw=aw, ah=ah: self.cmd_rect.send(
-            [ax + 10, ay + ah - 12, aw - 20, 5, COL_C1]))
         for (x, y, w, h, kind) in self._mesh_btns():
             if kind == 'start':
                 icon = 'play48'
