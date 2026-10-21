@@ -3160,7 +3160,7 @@ class ST7796:
                 self._gui_do(('sd', files[self._sd_sel][0]), eventtime)
             return
         self._gui_render(eventtime)
-        self._gui_run_action("M300 S1000 P60" if self.gui_beep else None)
+        self._gui_run_action("M300 S2500 P25" if self.gui_beep else None)
     # --- printing screen: progress + temperature graphs + pause/stop ---
     def _print_status(self, eventtime):
         try:
@@ -3524,7 +3524,7 @@ class ST7796:
         self._gui_msg_until = self.printer.get_reactor().monotonic() + 4.
         self._gui_next = 0.          # refresh the bottom bar on the next poll
         if self.gui_beep and not self._gui_action_active:
-            self._gui_run_action("M300 S400 P150")
+            self._gui_run_action("M300 S2500 P60")
     # --- tune / network helpers -------------------------------------------
     def _tune_gcode(self, what, sign, eventtime):
         gm = self.printer.lookup_object('gcode_move').get_status(eventtime)
@@ -3927,7 +3927,7 @@ class ST7796:
         self._gui_msg_until = eventtime + 120.
         self.gcode.respond_info("GUI: %s %s" % (msg[0], name))
         if self.gui_beep:
-            self._gui_run_action("M300 S1200 P150\nM300 S1600 P250")
+            self._gui_run_action("M300 S2500 P40\nM300 S3000 P60")
         self._gui_render(eventtime)
     def _fil_watch(self, eventtime):
         # Runout while printing: Klipper pauses (pause_on_runout); show the
@@ -4746,7 +4746,7 @@ class ST7796:
                                " bloqueada" % (temp, self.extrude_min_temp))
                 return
         if self.gui_beep:
-            script = "M300 S1000 P60\n" + (script or "")
+            script = "M300 S2500 P25\n" + (script or "")
         self._gui_run_action(script)
     def _gui_tap(self, rx, ry, eventtime):
         if self._notice:
@@ -4774,14 +4774,14 @@ class ST7796:
                     self.gcode.respond_info("GUI: %s" % lab)
                     script = val
                     if self.gui_beep:
-                        script = "M300 S1000 P60\n" + script
+                        script = "M300 S2500 P25\n" + script
                     self._gui_run_action(script)
                 else:
                     self._gui_step = val
                     self.gcode.respond_info("GUI step: %g mm" % val)
                     self._gui_render(eventtime)
                     self._gui_run_action(
-                        "M300 S1000 P60" if self.gui_beep else None)
+                        "M300 S2500 P25" if self.gui_beep else None)
                 return
         if self.gui_screen == 'estop':
             for (x, y, w, h, kind) in self._estop_btns():
@@ -4916,7 +4916,7 @@ class ST7796:
                         self._sd_sel = k
                         self.gcode.respond_info("GUI file sel: %s" % name)
                         self._gui_render(eventtime)
-                        self._gui_run_action("M300 S1000 P60"
+                        self._gui_run_action("M300 S2500 P25"
                                              if self.gui_beep else None)
                         return
         for (x, y, name, action, dim) in self._gui_rail():
