@@ -3358,13 +3358,18 @@ class ST7796:
             if item is None:
                 continue
             label, icon, action = item
+            fg = COL_WHITE
             if isinstance(action, tuple) and action[0] == 'beep':
                 label = "Beep ON" if self.gui_beep else "Beep OFF"
+                if not self.gui_beep:
+                    fg = COL_DIM
             elif isinstance(action, tuple) and action[0] == 'ext':
                 label = "E %gmm" % self._ext_step
             elif isinstance(action, tuple) and action[0] == 'fsens':
                 en, det = self._filament_status(eventtime)
-                label = "Filament ON" if en else "Filament OFF"
+                label = "Sensor ON" if en else "Sensor OFF"
+                if not en:
+                    fg = COL_DIM
             elif isinstance(action, tuple) and action[0] == 'bstep':
                 label = "%g" % self._BSTEPS[self._bstep_i]
             elif isinstance(action, tuple) and action[0] == 'baby' \
@@ -3383,9 +3388,9 @@ class ST7796:
             ty = iy + ih + 8
             ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self._gui_round(
                 bx, by, bw, bh, self.gui_btn_bg))
-            ops.append(lambda bx=bx, bw=bw, iy=iy, icon=icon, iw=iw:
+            ops.append(lambda bx=bx, bw=bw, iy=iy, icon=icon, iw=iw, fg=fg:
                        self._gui_icon(icon, bx + (bw - iw) // 2, iy,
-                                      COL_WHITE, self.gui_btn_bg))
+                                      fg, self.gui_btn_bg))
             ops.append(lambda bx=bx, bw=bw, ty=ty, label=label:
                        self._gui_text_center(bx, bw, ty, label, COL_WHITE,
                                              self.gui_btn_bg, 1))
