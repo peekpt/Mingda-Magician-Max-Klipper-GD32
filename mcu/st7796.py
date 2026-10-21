@@ -132,7 +132,7 @@ GUI_SCREENS = {
     'network': [],
     'more': [
         ("Save", "save", 'SAVE_CONFIG'),
-        ("Filam", "extrude", ('fsens',)),
+        ("Filam", "filok", ('fsens',)),
         ("Network", "network", ('scr', 'network')),
         ("Beep", "alert", ('beep',)),
         ("Info", "info", ('scr', 'info')),
@@ -417,25 +417,43 @@ EXTRA_ICONS = {
         '0003e000000f80000001f800003f000000007f0001fc000000001ff01ff00000'
         '000003ffff8000000000003ff800000000000000000000000000000000000000'
     )),
-    # Filament sensor: the extruder icon with a small cross in its lower
-    # left corner (no filament). Built from tft_icons' 'extrude'.
+    # Filament present: spool (user's SVG).
+    'filok': (64, 64, bytes.fromhex(
+        '00000000000000000000000000000000003c000000007800007e00000000fc00'
+        '00ff00000001fe0000ff00000001fe0000ff00000001fe0000ff00000001fe00'
+        '00ff3c387871fe0000ff7e7cfcf9fe0000ff7efefcfdfe0000ff7efefdfdfe00'
+        '00ff7efefdfdfe0000ff7efefdfdfe0000ff7efefdfdfe0000ff7efefdfdfe00'
+        '00ff7efefdfdfe0000ff7efefdfdfe0000ff7efefdfdfe0000ff7efefdfdfe00'
+        '00ff7efefdfdfe0000ff7efefdfdfe00007f7efefdfdfc00007f7efefdfdfc00'
+        '007f7efefdfdfc00003f7efefdfdf800003f7efefdfdf800003f7efefdfdf800'
+        '003f7efefdfdf800003f7efefdfdf800003f7efefdfdf800007f7efefdfdfc00'
+        '007f7efefdfdfc00007f7efefdfdfc0000ff7efefdfdfe0000ff7efefdfdfe00'
+        '00ff7efefdfdfe0000ff7efefdfdfe0000ff7efefdfdfe0000ff7efefdfdfe00'
+        '00ff7efefdfdfe0000ff7efefdfdfe0000ff7efefdfdfe0000ff7efefdfdfe00'
+        '00ff7efefdfdfe0000ff7efefdfdfe0000ff3e7c7dfdfe0000ff1c3839fdfe00'
+        '00ff000001fdfe0000ff000001fdfe0000ff000001fdfe0000ff000001fdfe00'
+        '007e000001fcfc00003c000001fc78000000000001fc00000000000001fc0000'
+        '0000000001fc00000000000001fc00000000000001fc00000000000000fc0000'
+        '0000000000f80000000000000070000000000000000000000000000000000000'
+    )),
+    # Filament runout: broken line with a cross (user's SVG).
     'filnout': (64, 64, bytes.fromhex(
-        '0000000000000000000007fffffff00000000ffffffff00000000ffffffff000'
-        '00000ffffffff00000000ffffffff00000000ffffffff00000000ffffffff000'
-        '00000ffffffff00000000ffffffff00000000ffffffff00000000ffffffff000'
-        '00000ffffffff00000000ffffffff00000000ffffffff00000000ffffffff000'
-        '00000ffffffff00000000ffffffff00000000ffffffff00000000ffffffff000'
-        '0003ffffffffffc00003ffffffffffc00003ffffffffffc00003ffffffffffc0'
-        '0003ffffffffffc00003ffffffffffc00003ffffffffffc00003ffffffffffc0'
-        '0003ffffffffffc00003ffffffffffc00003ffffffffffc00003ffffffffffc0'
-        '0003ffffffffffc00003ffffffffffc00003ffffffffffc00001ffffffffff80'
-        '000001ffffffc000080100ffffff80001c03807fffff00003e07c03ffffe0000'
-        '1f0f803ffffc00000f9f001ffff8000007fe000ffff0000003fc0007fff00000'
-        '01f80003ffe0000001f80001ffc0000003fc0000ff80000007fe0000ff000000'
-        '0f9f0000000000001f0f8000000000003e07c000000000001c0380003e000000'
-        '080100007e000000000000007e000000000000007e000000000000007e000000'
-        '00000000fe00000000000001fe00000007fffffffe00000007fffffffc000000'
-        '07fffffff800000007fffffff000000007ffffffe000000007ffffff80000000'
+        '0000000000000000000000000000000000000007c000000000000007c0000000'
+        '00000007c000000000000007c000000000000007c000000000000007c0000000'
+        '00000007c000000000000007c000000000000007c000000000000007c0000000'
+        '00000007c000000000000007c000000000000007c000000000000007c0000000'
+        '00000007c000000000000007c000000000000007c000000000000007c0000000'
+        '00000007c000000000000007c000000000000007c000000000000007c0000000'
+        '00000007c00000000000010001000000000003c007800000000007e00fc00000'
+        '000007f01fc00000000003f83f800000000001fc7f000000000000fefe000000'
+        '0000007ffc0000000000003ff80000000000001ff00000000000000fe0000000'
+        '0000001ff00000000000003ff80000000000007ffc000000000000fefe000000'
+        '000001fc7f000000000003f83f800000000007f01fc00000000007e00fc00000'
+        '000003c007800000000001000100000000000007c000000000000007c0000000'
+        '0000000000000000000000000000000000000007c00000000000000000000000'
+        '0000000000000000000000070000000000000000000000000000000000000000'
+        '000000000000000000000007c000000000000000000000000000003ff8000000'
+        '0000003ff80000000000003ff800000000000000000000000000000000000000'
     )),
     'pause48': _mk_bmp(48, _pause_fn),
     'play48': _mk_bmp(48, _play_fn),
@@ -1606,7 +1624,8 @@ class ST7796:
             fcol = COL_OK
         elif en and not det:
             fcol = COL_ERR
-        self._gui_icon_at('extrude', self.width - 124, 8, fcol, bg, 18)
+        ficon = 'filok' if (not en or det) else 'filnout'
+        self._gui_icon_at(ficon, self.width - 124, 6, fcol, bg, 20)
         # WiFi: white while associated, grey when there is no link
         wcol = COL_WHITE if self._wifi_link() else COL_DIM
         self._gui_icon_at('network', self.width - 102, 8, wcol, bg, 18)
