@@ -4118,23 +4118,14 @@ class ST7796:
         bg = self.gui_bar_bg
         x, y, w, h = self._choice_box()
         ops.append(lambda: self._gui_round(x, y, w, h, bg))
-        # the object preview, centred at the top (print icon if there is none)
+        # the print icon, centred at the top
         iw, ih = 130, 104
         ix = x + (w - iw) // 2
         iy = y + 12
-        bits = self._choice.get('bits')
-        if bits:
-            bw2, bh2, bdata = bits
-            bx2 = ix + max(0, (iw - bw2) // 2)
-            by2 = iy + max(0, (ih - bh2) // 2)
-            ops.append(lambda bx2=bx2, by2=by2, bw2=bw2, bh2=bh2, bdata=bdata:
-                       self._bmp_at((bw2, bh2, bdata), bx2, by2, COL_PREVIEW,
-                                    bg, ('chp', bw2, bh2)))
-        else:
-            isz = 72
-            ops.append(lambda ix=ix, iy=iy, isz=isz: self._gui_icon_at(
-                'print', ix + (iw - isz) // 2, iy + (ih - isz) // 2,
-                COL_WHITE, bg, isz))
+        isz = 72
+        ops.append(lambda ix=ix, iy=iy, isz=isz: self._gui_icon_at(
+            'print', ix + (iw - isz) // 2, iy + (ih - isz) // 2,
+            COL_WHITE, bg, isz))
         name = self._choice.get('name', '')
         ops.append(lambda: self._gui_text_center(
             x, w, iy + ih + 10, name[-44:], COL_WHITE, bg, 1))
@@ -4169,22 +4160,11 @@ class ST7796:
                 est = int(d.get('estimated_time') or 0)
             except Exception:
                 est = 0
-            bits = None
-            try:
-                d = self._sd_dir()
-                if d:
-                    bw2, bh2, bdata = tft_thumb.thumbnail_bitmap(
-                        os.path.join(d, name), 120)
-                    if bdata:
-                        bits = (bw2, bh2, bdata)
-            except Exception:
-                bits = None
             if self._choice is not None:
-                self._choice = {
-                    'name': name,
-                    'eta': ('%dh%02dm' % (est // 3600, (est % 3600) // 60)
-                            if est > 0 else None),
-                    'bits': bits}
+                est_txt = ('%dh%02dm' % (est // 3600, (est % 3600) // 60)
+                           if est > 0 else None)
+                if est_txt and self._choice.get('eta') != est_txt:
+                    self._choice = {'name': name, 'eta': est_txt}
             self._gui_pending = time.monotonic() + 0.2
         threading.Thread(target=_run, daemon=True).start()
     # --- custom macros (panel_macros.json) --------------------------------
