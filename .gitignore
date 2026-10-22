@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# never commit the bot token
+telegram.conf
+*.secret

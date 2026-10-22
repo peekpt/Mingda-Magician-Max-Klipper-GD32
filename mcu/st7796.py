@@ -136,6 +136,7 @@ GUI_SCREENS = {
         ("Network", "network", ('scr', 'network')),
         ("Beep", "beep", ('beep',)),
         ("Info", "info", ('scr', 'info')),
+        ("Telegram", "tg", ('tgtest',)),
     ],
 }
 
@@ -416,6 +417,25 @@ EXTRA_ICONS = {
         '00783e0000f83c00003c0fc007e07800001e03ffff80f0000007807ffc03c000'
         '0003e000000f80000001f800003f000000007f0001fc000000001ff01ff00000'
         '000003ffff8000000000003ff800000000000000000000000000000000000000'
+    )),
+    # Telegram: paper plane.
+    'tg': (64, 64, bytes.fromhex(
+        '0000000000000000000000000000000000000000000000000000000000000000'
+        '0000000000000000000000000000000020000000000000003c00000000000000'
+        '3f000000000000003fc00000000000003ff00000000000003ffe000000000000'
+        '3fff8000000000003fffe000000000003ffff800000000003ffffe0000000000'
+        '3fffffc0000000003ffffff0000000003ffffffc000000003fffffff80000000'
+        '3fffffffe00000003ffffffff80000003ffffffffe0000003fffffffffc00000'
+        '3ffffffffff000003ffffffffffc000003ffffffffff00000007ffffffffc000'
+        '00001ffffffff8000000007ffffffe0000000000ffffff800000000003fffff0'
+        '00000000000ffff80000000001fffff000000001ffffffc0000001fffffffe00'
+        '0000fffffffff800007fffffffffc0003fffffffffff00003ffffffffff80000'
+        '3fffffffffe000003fffffffff0000003ffffffffc0000003fffffffe0000000'
+        '3fffffff800000003ffffffc000000003ffffff0000000003fffff8000000000'
+        '3ffffe00000000003ffff000000000003fffc000000000003fff000000000000'
+        '3ff80000000000003fe00000000000003f000000000000003c00000000000000'
+        '2000000000000000000000000000000000000000000000000000000000000000'
+        '0000000000000000000000000000000000000000000000000000000000000000'
     )),
     # Beep: speaker with sound waves.
     'beep': (64, 64, bytes.fromhex(
@@ -3832,6 +3852,19 @@ class ST7796:
         ty = y + max(0, (h - 64) // 2)
         ops.append(lambda tx=tx, ty=ty, label=label, bg=bg, fg=fg:
                    self._gui_text(tx, ty, label, fg, bg, 4))
+    # --- notifications -----------------------------------------------------
+    def _notify(self, text):
+        path = '/home/mingda/printer_data/config/telegram.sh'
+        if not os.path.exists(path):
+            return
+
+        def _run():
+            try:
+                subprocess.run(['/bin/sh', path, text], timeout=15,
+                               capture_output=True)
+            except Exception:
+                logging.exception("st7796: telegram failed")
+        threading.Thread(target=_run, daemon=True).start()
     # --- Filament ---------------------------------------------------------
     def _notice_ok_btn(self):
         return (160, 42)
@@ -3921,6 +3954,10 @@ class ST7796:
         else:
             msg = ("Print error", (ps.get('message') or name)[:40])
         self._notice = msg
+        self._notify({'complete': '\u2705 Print finished: %s',
+                      'cancelled': '\u26d4 Print cancelled: %s',
+                      'error': '\u274c Print error: %s'}[state]
+                     % (name or msg[1]))
         self._notice_icon = {'complete': 'check',
                              'cancelled': 'x48'}.get(state, 'alert')
         self._gui_msg = msg[0]
@@ -3947,6 +3984,7 @@ class ST7796:
             return
         self._fil_lost = True
         self.gcode.respond_info("GUI: filament runout - showing the panel")
+        self._notify("\u26a0\ufe0f Filament runout - the print is paused")
         if self.gui_screen != 'filout':
             self.gui_screen = 'filout'
             self._gui_render(eventtime)
@@ -4599,6 +4637,15 @@ class ST7796:
                 self._gui_msg = "Starting hotspot MINGDA_SETUP..."
                 self._gui_msg_until = now + 30.
                 self._wifi_call('hotspoton')
+        elif isinstance(action, tuple) and action[0] == 'tgtest':
+            if not os.path.exists(
+                    '/home/mingda/printer_data/config/telegram.sh'):
+                self._gui_warn("Telegram helper missing")
+                return
+            self._notify("\U0001f514 Test from the Mingda panel")
+            self._gui_msg = "Telegram test sent"
+            self._gui_msg_until = now + 8.
+            self._gui_render(eventtime)
         elif isinstance(action, tuple) and action[0] == 'kbhost':
             self._kb_open('text', 'hostname', socket.gethostname(), 'network')
             self._gui_render(eventtime)

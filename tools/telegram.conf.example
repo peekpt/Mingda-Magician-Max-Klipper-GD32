@@ -1,0 +1,3 @@
+# Copy to ~/printer_data/config/telegram.conf (chmod 600) - NEVER commit it.
+TOKEN=123456789:AAExampleTokenFromBotFather
+CHAT=123456789
