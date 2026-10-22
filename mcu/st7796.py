@@ -3947,17 +3947,22 @@ class ST7796:
         if state not in ('complete', 'cancelled', 'error'):
             return
         name = os.path.basename(ps.get('filename') or '')[:34]
+        dur = int(ps.get('print_duration') or 0)
+        if dur >= 3600:
+            ttxt = "%dh%02dm" % (dur // 3600, (dur % 3600) // 60)
+        else:
+            ttxt = "%dm" % max(1, dur // 60)
         if state == 'complete':
-            msg = ("Print finished", name)
+            msg = ("Print finished (%s)" % ttxt, name)
         elif state == 'cancelled':
-            msg = ("Print cancelled", name)
+            msg = ("Print cancelled (%s)" % ttxt, name)
         else:
             msg = ("Print error", (ps.get('message') or name)[:40])
         self._notice = msg
-        self._notify({'complete': '\u2705 Print finished: %s',
-                      'cancelled': '\u26d4 Print cancelled: %s',
-                      'error': '\u274c Print error: %s'}[state]
-                     % (name or msg[1]))
+        self._notify({'complete': '\u2705 Print finished in %s: %s',
+                      'cancelled': '\u26d4 Print cancelled after %s: %s',
+                      'error': '\u274c Print error (%s): %s'}[state]
+                     % (ttxt, name or msg[1]))
         self._notice_icon = {'complete': 'check',
                              'cancelled': 'x48'}.get(state, 'alert')
         self._gui_msg = msg[0]
