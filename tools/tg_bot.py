@@ -5,6 +5,7 @@ Reads TOKEN/CHAT from ~/printer_data/config/telegram.conf (never in git) and
 talks to the local Moonraker on 127.0.0.1:7125. Only the configured chat is
 answered.
 """
+import http.client
 import json
 import os
 import socket
@@ -54,18 +55,54 @@ def conf():
     return d
 
 
-def api(method, timeout=40, **params):
+_POLL = None
+_API = None
+
+
+def _call(method, params, timeout, poll=False):
+    """One Bot API call, reusing the TLS connection (keep-alive)."""
+    global _POLL, _API
     token = conf().get('TOKEN', '')
     if not token:
         return {}
-    url = 'https://api.telegram.org/bot%s/%s' % (token, method)
-    data = urllib.parse.urlencode(params).encode()
-    try:
-        with urllib.request.urlopen(
-                urllib.request.Request(url, data=data), timeout=timeout) as r:
-            return json.load(r)
-    except Exception:
-        return {}
+    path = '/bot%s/%s' % (token, method)
+    body = urllib.parse.urlencode(params)
+    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    for _attempt in (0, 1):
+        conn = _POLL if poll else _API
+        try:
+            if conn is None:
+                conn = http.client.HTTPSConnection('api.telegram.org',
+                                                   timeout=timeout)
+                if poll:
+                    _POLL = conn
+                else:
+                    _API = conn
+            conn.request('POST', path, body, headers)
+            resp = conn.getresponse()
+            data = resp.read()
+            if resp.status != 200:
+                raise IOError('http %s' % resp.status)
+            return json.loads(data)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            if poll:
+                _POLL = None
+            else:
+                _API = None
+    return {}
+
+
+def api(method, timeout=20, **params):
+    return _call(method, params, timeout)
+
+
+def api_poll(offset):
+    return _call('getUpdates',
+                 {'offset': offset, 'timeout': 25}, 40, poll=True)
 
 
 def send(text):
@@ -157,32 +194,31 @@ def handle(text):
     elif cmd == '/status':
         send(status_text())
     elif cmd == '/pause':
+        send('pausing...')
         gcode('PAUSE')
-        send('paused')
     elif cmd == '/resume':
+        send('resuming...')
         gcode('RESUME')
-        send('resumed')
     elif cmd == '/cancel':
+        send('cancelling...')
         gcode('CANCEL_PRINT')
-        send('cancelled')
     elif cmd == '/home':
+        send('homing...')
         gcode('G28')
-        send('homing')
     elif cmd == '/files':
         send(files_text())
     elif cmd == '/print':
         if not arg:
             send('use /print <name>  (see /files)')
             return
+        send('starting %s' % arg)
         gcode('SDCARD_RESET_FILE\nSDCARD_PRINT_FILE FILENAME="%s"'
               % arg.replace('"', ''))
-        send('starting %s' % arg)
     elif cmd == '/unload':
         st = state()
         send('pausing and ejecting...')
         gcode(('PAUSE\n' if st in ('printing', 'paused') else '')
               + 'UNLOAD_FILAMENT')
-        send('eject started - when it stops use /load')
     elif cmd == '/load':
         send('inserting filament (heats first)...')
         gcode('LOAD_FILAMENT')
@@ -210,15 +246,7 @@ def main():
     except Exception:
         pass
     while True:
-        try:
-            token = c.get('TOKEN', '')
-            url = ('https://api.telegram.org/bot%s/getUpdates?offset=%d'
-                   '&timeout=25' % (token, offset))
-            with urllib.request.urlopen(url, timeout=40) as resp:
-                r = json.load(resp)
-        except Exception:
-            time.sleep(5)
-            continue
+        r = api_poll(offset)
         for u in r.get('result') or []:
             offset = u.get('update_id', offset) + 1
             try:
@@ -233,7 +261,7 @@ def main():
                 handle((msg.get('text') or '').strip())
             except Exception as exc:
                 send('error: %s' % exc)
-        time.sleep(0.2)
+        time.sleep(0.05)
 
 
 if __name__ == '__main__':
