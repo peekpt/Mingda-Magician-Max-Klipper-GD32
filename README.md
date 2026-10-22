@@ -24,6 +24,8 @@ max (most of the time is the first controller flash).
 | ![Extruder](images/panel_extrude.png)<br>**Extruder** — load/unload filament, extrude | ![Filament](images/panel_filament.png)<br>**Filament** — eject/insert, live baby stepping |
 | ![More](images/panel_more.png)<br>**More** — save config, filament sensor, network, beep | ![Power](images/panel_estop.png)<br>**Power** — emergency stop, restart, host shutdown |
 | ![Adjust popup](images/panel_popup.png)<br>**Adjust popup** — −, +, step toggle and save | ![Boot splash](images/splash.png)<br>**Boot splash** — the Mingda mark, drawn by the board |
+| ![File confirm](images/panel_file_choice.png)<br>**Files** — confirm with the estimated time, or delete | ![Macros](images/panel_macros.png)<br>**Macros** — your own buttons from a JSON file |
+| ![Touch calibration](images/panel_touch_cal.png)<br>**Touch** — 4-point calibration wizard | ![Klipper error](images/panel_klipper_error.png)<br>**Klipper error** — the reason, then restart right there |
 
 ---
 
@@ -219,7 +221,7 @@ Everything is a tap; the left rail is always there
 | Screen | How to get there | What it does |
 |---|---|---|
 | **Printing** | starts automatically during a print | Object preview (from the gcode thumbnail), live values list, pause/resume, cancel. Tap a list row to adjust it on the spot. |
-| **Files** | rail 📄 or **Main → Print** | Pick a file, ▲/▼ page, ▶ to start |
+| **Files** | rail 📄 or **Main → Print** | Pick a file (▲/▼ page); ▶ asks **Print** (with the estimated time) or **Delete** — tap outside to cancel |
 | **Main** | rail 🏠 | Move, Temperature, Extruder, Print, Level, Z Calibrate, More, Home |
 | **Move** | Main → Move | Jog X/Y/Z; the bottom strip changes the step size |
 | **Temperature** | Main → Temperature | Preheat presets (PLA/PETG/ABS/TPU), cool down, set nozzle/bed |
@@ -228,11 +230,16 @@ Everything is a tap; the left rail is always there
 | **Adjust** | Level → Adjust | Tap a grid point (the nozzle moves there and down to the mesh surface), then nudge with − / + and a 0.005/0.01/0.1 step. **Save** writes it to `printer.cfg`. |
 | **Advanced** | Extruder → More… → Advanced | Pressure advance, smooth time, input shaper frequencies — tap a card, adjust, **Save** to keep it |
 | **Limits** | More → More… → Limits | Velocity, acceleration, square corner velocity, minimum cruise ratio |
-| **More** | Main → More | PID, save config, filament sensor, network info, beep, motors off |
+| **More** | Main → More | Save config, filament sensor, network, beep, Info, Telegram, **Macros**, **Touch** |
+| **Macros** | More → Macros | Your own buttons, defined in `panel_macros.json` (see below) |
+| **Touch** | More → Touch | 4-point touch calibration: tap the crosshairs, then copy the printed values into `printer.cfg` |
+| **Klipper error** | appears by itself | If Klipper stops, the panel shows the reason and two buttons: **Firmware Restart** and **Host Reboot** |
 | **Power** | rail ⚠ | Emergency stop, Klipper restart, **Firmware restart**, reboot/shutdown the Pi |
 
 Tips
 
+- The top bar shows an **orange arrow** when Moonraker finds updates for
+  Klipper or Mainsail; tap it to see how many commits each one is behind.
 - The **amount of each adjustment** (the step) is itself a button: tap it to
   cycle 0.1 → 0.5 → 1 → … or 0.005 → 0.01 → 0.1.
 - **Pause**, **Cancel** and the rail always work, even mid-print.
@@ -329,6 +336,32 @@ sudo visudo -c          # must say "parsed OK"
 The keyboard that asks for the WiFi password also edits the hostname
 (`a-z`, `0-9`, `-`, up to 63 characters). Passwords are masked on screen and
 never written to the Klipper log.
+
+## Custom macro tiles
+
+Any of your macros can have its own big button. Create
+`~/printer_data/config/panel_macros.json` (up to 7 entries) and it shows up
+under **More → Macros**. The file is re-read whenever it changes — no restart.
+
+```json
+[
+  {"label": "Preheat PLA", "icon": "heatup", "gcode": "PREHEAT_PLA"},
+  {"label": "Load",        "icon": "load",   "gcode": "LOAD_FILAMENT"}
+]
+```
+
+- `label` — the text on the tile (10 characters max)
+- `gcode` — anything you would type in the console (a macro name, `M106 S255`, …)
+- `icon` — optional: `alert`, `back`, `bed`, `bedlevel`, `bedmesh`, `check`,
+  `cog`, `console`, `cool`, `down`, `edown`, `eup`, `extrude`, `fan`, `files`,
+  `fire`, `heat`, `heatup`, `heatwave`, `home`, `info`, `led`, `left`, `limits`,
+  `load`, `mesh`, `move`, `network`, `nozzle`, `power`, `print`, `probe`,
+  `refresh`, `right`, `save`, `script`, `settings`, `speed`, `thermo`,
+  `unload`, `up`, `zoffset` (anything else falls back to `script`)
+
+A ready-to-edit copy is in `tools/panel_macros.example.json`.
+
+---
 
 ## Telegram (notifications + commands)
 

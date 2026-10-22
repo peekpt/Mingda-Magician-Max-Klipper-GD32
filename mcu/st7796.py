@@ -14,6 +14,7 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.parse
 import urllib.request
 from . import tft_icons
 from . import tft_thumb
@@ -108,6 +109,10 @@ GUI_SCREENS = {
     ],
     # 'probe' (Z-Probe) is drawn by _probe_view_ops: see Z_STEPS below.
     'probe': [],
+    # 'touch calibration' wizard draws its own overlay.
+    'tcal': [],
+    # 'macros' is filled from panel_macros.json at runtime.
+    'macros': [],
     # 'print' is built dynamically from the virtual SD files (see _print_items)
     'print': [],
     'filament': [
@@ -138,6 +143,8 @@ GUI_SCREENS = {
         ("Beep", "beep", ('beep',)),
         ("Info", "info", ('scr', 'info')),
         ("Telegram", "tg", ('tgtest',)),
+        ("Macros", "script", ('scr', 'macros')),
+        ("Touch", "settings", ('scr', 'tcal')),
     ],
 }
 
@@ -228,7 +235,8 @@ GUI_TITLES = {'ptune': 'Tune', 'filament': 'Filament',
               'meshadj': 'Adjust', 'advanced': 'Advanced',
               'limits': 'Limits', 'calibrate': 'Calibrate', 'pid': 'PID',
               'info': 'Info', 'filout': 'Filament',
-              'wifilist': 'WiFi', 'wifikey': 'WiFi'}
+              'wifilist': 'WiFi', 'wifikey': 'WiFi',
+              'tcal': 'Touch', 'macros': 'Macros'}
 
 # Sentinel stored in the grid for a cell holding an icon (drawn by write_glyph).
 ICON = 0x100
@@ -694,6 +702,9 @@ class ST7796:
         self._upd_n = 0
         self._upd_next = 0.
         self._upd_busy = False
+        self._choice = None
+        self._macros_cache = (0., [])
+        self._tcal = None
         self._bstep_i = 1
         self._baby_dirty = False
         self._popup = None
@@ -1567,6 +1578,8 @@ class ST7796:
     def _screen_items(self):
         if self.gui_screen == 'print':
             return []
+        if self.gui_screen == 'macros':
+            return self._macro_items()
         return GUI_SCREENS.get(self.gui_screen, [])
     def _gui_buttons(self):
         cols = GUI_COLS.get(self.gui_screen, 4)
@@ -3193,7 +3206,7 @@ class ST7796:
         elif kind == 'print':
             files = self._sd_files()
             if files:
-                self._gui_do(('sd', files[self._sd_sel][0]), eventtime)
+                self._choice_open(files[self._sd_sel][0], eventtime)
             return
         self._gui_render(eventtime)
         self._gui_run_action("M300 S600 P12" if self.gui_beep else None)
@@ -3454,7 +3467,11 @@ class ST7796:
                                            self._gc(idx)]))
         ops.append(lambda et=eventtime: self._gui_topbar(et))
         ops.append(lambda et=eventtime: self._gui_bottombar(et))
-        if getattr(self, '_notice', None):
+        if self.gui_screen == 'tcal':
+            self._tcal_ops(ops)
+        elif getattr(self, '_choice', None):
+            self._choice_ops(ops)
+        elif getattr(self, '_notice', None):
             self._notice_ops(ops)
         self._gui_enqueue(ops)
     def _raw_to_screen(self, rx, ry):
@@ -4082,6 +4099,174 @@ class ST7796:
             return " / ".join(out) or "everything is up to date"
         except Exception:
             return "cannot read the update status"
+
+    # --- file choice popup ------------------------------------------------
+    def _choice_btns(self):
+        w = 150
+        h = 46
+        y = self.TOP_H + 150
+        return [('print', (self.width - 2 * w - 12) // 2, y, w, h),
+                ('del', (self.width - 2 * w - 12) // 2 + w + 12, y, w, h)]
+    def _choice_ops(self, ops):
+        bg = self.gui_bar_bg
+        w, h = 400, 210
+        x = (self.width - w) // 2
+        y = self.TOP_H + (self.height - self.STRIP_H - self.TOP_H - h) // 2
+        ops.append(lambda: self._gui_round(x, y, w, h, bg))
+        name = self._choice.get('name', '')
+        ops.append(lambda: self._gui_text_center(
+            x, w, y + 14, name[-26:], COL_WHITE, bg, 1))
+        eta = self._choice.get('eta')
+        sub = ('estimated %s' % eta) if eta else 'reading the file...'
+        ops.append(lambda: self._gui_text_center(
+            x, w, y + 40, sub, COL_DIM2, bg, 1))
+        for (kind, bx, by, bw, bh) in self._choice_btns():
+            lab = "Print" if kind == 'print' else "Delete"
+            acc = COL_OK if kind == 'print' else COL_ERR
+            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self._gui_round(
+                bx, by, bw, bh, self.gui_btn_bg))
+            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, lab=lab:
+                       self._gui_text_center(bx, bw, by + (bh - 16) // 2,
+                                             lab, COL_WHITE, self.gui_btn_bg,
+                                             1))
+            ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, acc=acc:
+                       self.cmd_rect.send([bx + 8, by + bh - 9, bw - 16, 4,
+                                           acc]))
+    def _choice_open(self, name, eventtime):
+        self._choice = {'name': name, 'eta': None}
+        self._gui_render(eventtime)
+
+        def _run():
+            try:
+                q = urllib.parse.quote(name)
+                with urllib.request.urlopen(
+                        'http://127.0.0.1:7125/server/files/metadata'
+                        '?filename=' + q, timeout=10) as r:
+                    d = json.loads(r.read().decode())['result']
+                est = int(d.get('estimated_time') or 0)
+            except Exception:
+                est = 0
+            if est > 0 and self._choice is not None:
+                self._choice = {'name': name,
+                                'eta': '%dh%02dm' % (est // 3600,
+                                                     (est % 3600) // 60)}
+            self._gui_pending = time.monotonic() + 0.2
+        threading.Thread(target=_run, daemon=True).start()
+    def _file_delete(self, name, eventtime):
+        def _run():
+            ok = False
+            try:
+                q = urllib.parse.quote(name)
+                req = urllib.request.Request(
+                    'http://127.0.0.1:7125/server/files/gcodes/' + q,
+                    method='DELETE')
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    ok = r.status == 200
+            except Exception:
+                ok = False
+            self._notice = (("File deleted" if ok else "Delete failed"),
+                            name[-40:])
+            self._notice_icon = 'check' if ok else 'alert'
+            self._sd_cache_t = 0.
+            self._gui_pending = time.monotonic() + 0.2
+        threading.Thread(target=_run, daemon=True).start()
+
+    # --- custom macros (panel_macros.json) --------------------------------
+    def _panel_macros(self):
+        path = os.path.expanduser('~/printer_data/config/panel_macros.json')
+        try:
+            mt = os.stat(path).st_mtime
+        except OSError:
+            return []
+        if self._macros_cache[0] == mt:
+            return self._macros_cache[1]
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            out = []
+            for it in data:
+                if isinstance(it, dict) and it.get('label') and it.get('gcode'):
+                    ico = str(it.get('icon') or 'script')
+                    if ico not in tft_icons.ICONS and ico not in EXTRA_ICONS:
+                        ico = 'script'
+                    out.append((str(it['label'])[:10], ico, str(it['gcode'])))
+        except Exception:
+            out = []
+        self._macros_cache = (mt, out)
+        return out
+    def _macro_items(self):
+        items = list(self._panel_macros())[:7]
+        items.append(("Back", "back", ('scr', 'more')))
+        return items
+
+    # --- touch calibration wizard -----------------------------------------
+    TCAL_STEPS = 4
+    def _tcal_targets(self):
+        r = self.RAIL_W + 42
+        top = self.TOP_H + 42
+        bot = self.height - self.STRIP_H - 42
+        return [(r, top), (self.width - 42, top),
+                (r, bot), (self.width - 42, bot)]
+    def _tcal_ops(self, ops):
+        if self._tcal is None:
+            self._tcal = {'pts': [], 'res': None}
+        t = self._tcal
+        bg = COL_BG
+        res = t.get('res')
+        if res:
+            x0, x1, y0, y1, swap, invx, invy = res
+            lines = [("raw_x_min: %d" % x0, COL_WHITE),
+                     ("raw_x_max: %d" % x1, COL_WHITE),
+                     ("raw_y_min: %d" % y0, COL_WHITE),
+                     ("raw_y_max: %d" % y1, COL_WHITE),
+                     ("touch_swap_xy: %s" % swap, COL_WARN if swap else COL_DIM2),
+                     ("touch_invert_x: %s" % invx, COL_WARN if invx else COL_DIM2),
+                     ("touch_invert_y: %s" % invy, COL_WARN if invy else COL_DIM2)]
+            ops.append(lambda: self._gui_text(self.RAIL_W + 14, self.TOP_H + 14,
+                                              "Paste under [display]:",
+                                              COL_DIM2, bg, 1))
+            y = self.TOP_H + 40
+            for txt, col in lines:
+                ops.append(lambda txt=txt, y=y, col=col:
+                           self._gui_text(self.RAIL_W + 14, y, txt, col, bg, 1))
+                y += 22
+            ops.append(lambda: self._gui_text(self.RAIL_W + 14, y + 8,
+                                              "tap anywhere to finish",
+                                              COL_DIM2, bg, 1))
+            return
+        n = len(t['pts'])
+        tx, ty = self._tcal_targets()[min(n, 3)]
+        ops.append(lambda: self._gui_text_center(
+            self.RAIL_W, self.width - self.RAIL_W, self.TOP_H + 6,
+            "Touch calibration", COL_WHITE, bg, 1))
+        ops.append(lambda: self._gui_text_center(
+            self.RAIL_W, self.width - self.RAIL_W, self.TOP_H + 24,
+            "tap the crosshair (%d of 4)" % (n + 1), COL_DIM2, bg, 1))
+        ops.append(lambda: self.cmd_rect.send([tx - 1, ty - 24, 3, 48, COL_WARN]))
+        ops.append(lambda: self.cmd_rect.send([tx - 24, ty - 1, 48, 3, COL_WARN]))
+    def _tcal_tap(self, rx, ry, eventtime):
+        t = self._tcal
+        if t is None:
+            return
+        if t.get('res'):
+            self._tcal = None
+            self._gui_do(('scr', 'more'), eventtime)
+            return
+        t['pts'].append((rx, ry))
+        if len(t['pts']) >= 4:
+            ax, ay = t['pts'][0]
+            bx, by = t['pts'][1]
+            cx, cy = t['pts'][2]
+            dx2, dy2 = t['pts'][3]
+            swap = abs(ay - by) > abs(ax - bx)
+            if swap:
+                xs = [ay, by, cy, dy2]; ys = [ax, bx, cx, dx2]
+            else:
+                xs = [ax, bx, cx, dx2]; ys = [ay, by, cy, dy2]
+            invx = (by < ay) if not swap else (bx < ax)
+            invy = (cx < ax) if not swap else (cy < ay)
+            t['res'] = (min(xs), max(xs), min(ys), max(ys), swap, invx, invy)
+        self._gui_render(eventtime)
 
     # --- on-screen keyboard ----------------------------------------------
     _KB_LETTERS = (list('qwertyuiop'),
@@ -4914,6 +5099,26 @@ class ST7796:
         if (self.width - 156) <= sx0 < (self.width - 136) and 2 <= sy0 < 28:
             self._notice = ("Updates available", self._upd_text()[:40])
             self._notice_icon = 'refresh'
+            self._gui_render(eventtime)
+            return
+        if self.gui_screen == 'tcal':
+            try:
+                self._tcal_tap(rx, ry, eventtime)
+            except Exception:
+                logging.exception("st7796: touch calibration failed")
+            return
+        if self._choice is not None:
+            for (kind, x, y, w, h) in self._choice_btns():
+                if x <= sx0 < x + w and y <= sy0 < y + h:
+                    name = self._choice.get('name', '')
+                    self._choice = None
+                    if kind == 'print':
+                        self._gui_do(('sd', name), eventtime)
+                    else:
+                        self._file_delete(name, eventtime)
+                        self._gui_render(eventtime)
+                    return
+            self._choice = None
             self._gui_render(eventtime)
             return
         if self._notice:

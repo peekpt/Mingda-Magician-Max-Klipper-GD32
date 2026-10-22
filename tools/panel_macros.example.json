@@ -1,0 +1,7 @@
+[
+  {"label": "Preheat PLA", "icon": "heatup", "gcode": "PREHEAT_PLA"},
+  {"label": "Preheat ABS", "icon": "heatup", "gcode": "PREHEAT_ABS"},
+  {"label": "Load",        "icon": "load",   "gcode": "LOAD_FILAMENT"},
+  {"label": "Unload",      "icon": "unload", "gcode": "UNLOAD_FILAMENT"},
+  {"label": "Home",        "icon": "home",    "gcode": "G28"}
+]
