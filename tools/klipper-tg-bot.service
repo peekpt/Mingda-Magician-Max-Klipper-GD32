@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram bot for the Mingda printer panel
+After=network-online.target moonraker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mingda
+WorkingDirectory=/home/mingda/printer_data/config
+ExecStart=/usr/bin/python3 /home/mingda/printer_data/config/tg_bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

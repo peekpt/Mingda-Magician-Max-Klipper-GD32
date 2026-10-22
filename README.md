@@ -330,6 +330,30 @@ The keyboard that asks for the WiFi password also edits the hostname
 (`a-z`, `0-9`, `-`, up to 63 characters). Passwords are masked on screen and
 never written to the Klipper log.
 
+## Telegram (notifications + commands)
+
+`telegram.sh` sends the notifications (print finished/cancelled/error, filament
+runout). `tg_bot.py` is a small bot that also takes commands from the chat.
+Both read the token from `~/printer_data/config/telegram.conf` (600, never in
+git):
+
+```
+TOKEN=123456:ABC...
+CHAT=123456789
+```
+
+Install the bot once:
+
+```bash
+sudo cp tools/klipper-tg-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now klipper-tg-bot
+```
+
+Commands (also shown in Telegram's "/" menu): `/status`, `/pause`, `/resume`,
+`/cancel`, `/home`, `/files`, `/print <name>`, `/unload` (pause + eject),
+`/load` (insert), `/beep`, `/ip`, `/host`, `/help`.
+
 ## Hardware notes
 
 - **Host:** Raspberry Pi Zero 2 W, powered from the printer's 5 V rail and
