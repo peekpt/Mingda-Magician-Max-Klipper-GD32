@@ -5129,8 +5129,7 @@ class ST7796:
             self.gcode.respond_info("GUI: busy - tap ignored")
             return
         sx, sy = self._raw_to_screen(rx, ry)
-        self.gcode.respond_info("GUI tap raw=(%d,%d) -> (%d,%d)"
-                                % (rx, ry, sx, sy))
+        self._tcal = None
         if self._popup is not None:
             # A popup is modal: taps outside are ignored.
             self._popup_tap(sx, sy, eventtime)
