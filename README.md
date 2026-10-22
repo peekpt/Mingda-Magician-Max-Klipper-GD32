@@ -24,7 +24,7 @@ max (most of the time is the first controller flash).
 | ![Extruder](images/panel_extrude.png)<br>**Extruder** — load/unload filament, extrude | ![Filament](images/panel_filament.png)<br>**Filament** — eject/insert, live baby stepping |
 | ![More](images/panel_more.png)<br>**More** — save config, filament sensor, network, beep | ![Power](images/panel_estop.png)<br>**Power** — emergency stop, restart, host shutdown |
 | ![Adjust popup](images/panel_popup.png)<br>**Adjust popup** — −, +, step toggle and save | ![Boot splash](images/splash.png)<br>**Boot splash** — the Mingda mark, drawn by the board |
-| ![File confirm](images/panel_file_choice.png)<br>**Files** — confirm with the estimated time, or delete | ![Macros](images/panel_macros.png)<br>**Macros** — your own buttons from a JSON file |
+| ![File confirm](images/panel_file_choice.png)<br>**Files** — part preview, estimated time, print or cancel | ![Macros](images/panel_macros.png)<br>**Macros** — your own buttons from a JSON file |
 | ![Touch calibration](images/panel_touch_cal.png)<br>**Touch** — 4-point calibration wizard | ![Klipper error](images/panel_klipper_error.png)<br>**Klipper error** — the reason, then restart right there |
 
 ---
@@ -221,7 +221,7 @@ Everything is a tap; the left rail is always there
 | Screen | How to get there | What it does |
 |---|---|---|
 | **Printing** | starts automatically during a print | Object preview (from the gcode thumbnail), live values list, pause/resume, cancel. Tap a list row to adjust it on the spot. |
-| **Files** | rail 📄 or **Main → Print** | Pick a file (▲/▼ page); ▶ asks **Print** (with the estimated time) or **Delete** — tap outside to cancel |
+| **Files** | rail 📄 or **Main → Print** | Pick a file (▲/▼ page); ▶ opens a card with the part preview, the name and the estimated time — **Print** or **Cancel** (tap outside also cancels) |
 | **Main** | rail 🏠 | Move, Temperature, Extruder, Print, Level, Z Calibrate, More, Home |
 | **Move** | Main → Move | Jog X/Y/Z; the bottom strip changes the step size |
 | **Temperature** | Main → Temperature | Preheat presets (PLA/PETG/ABS/TPU), cool down, set nozzle/bed |

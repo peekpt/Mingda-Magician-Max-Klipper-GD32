@@ -1542,7 +1542,7 @@ class ST7796:
     # Vertical list geometry: the list fills the button area, with up/down/print
     # buttons in a strip on the right.
     RIGHT_W = 80
-    LIST_PITCH = 20
+    LIST_PITCH = 26
     def _list_area(self):
         return (self.RAIL_W, self.TOP_H, self.width - self.RIGHT_W,
                 self.height - self.STRIP_H)
@@ -3173,13 +3173,14 @@ class ST7796:
         for (rx, ry, rw, rh, k, name) in self._list_rows():
             bg = COL_ACTIVE if k == self._sd_sel else COL_BG
             ops.append(lambda rx=rx, ry=ry, rw=rw, rh=rh, bg=bg:
-                       self.cmd_rect.send([rx, ry, rw, rh, bg]))
+                       self.cmd_rect.send([rx, ry + 2, rw, rh - 4, bg]))
             if k == self._sd_sel:
                 ops.append(lambda rx=rx, ry=ry, rh=rh:
-                           self.cmd_rect.send([rx, ry, 4, rh, COL_C1]))
-            ops.append(lambda rx=rx, ry=ry, name=name, bg=bg:
-                       self._gui_text(rx + 12, ry + 2, name[:44], COL_WHITE,
-                                      bg, 1))
+                           self.cmd_rect.send([rx, ry + 2, 4, rh - 4,
+                                               COL_C1]))
+            ops.append(lambda rx=rx, ry=ry, rh=rh, name=name, bg=bg:
+                       self._gui_text(rx + 12, ry + (rh - 16) // 2,
+                                      name[:44], COL_WHITE, bg, 1))
         for (bx, by, bw, bh, kind) in self._list_btns():
             isz = 34                    # smaller icon, centred in the square
             ops.append(lambda bx=bx, by=by, bw=bw, bh=bh:
@@ -4101,30 +4102,52 @@ class ST7796:
             return "cannot read the update status"
 
     # --- file choice popup ------------------------------------------------
-    def _choice_btns(self):
-        w = 150
-        h = 46
-        y = self.TOP_H + 150
-        return [('print', (self.width - 2 * w - 12) // 2, y, w, h),
-                ('del', (self.width - 2 * w - 12) // 2 + w + 12, y, w, h)]
-    def _choice_ops(self, ops):
-        bg = self.gui_bar_bg
-        w, h = 400, 210
+    def _choice_box(self):
+        w, h = 400, 250
         x = (self.width - w) // 2
         y = self.TOP_H + (self.height - self.STRIP_H - self.TOP_H - h) // 2
+        return x, y, w, h
+    def _choice_btns(self):
+        x, y, w, h = self._choice_box()
+        bw, bh = 150, 46
+        by = y + h - bh - 14
+        bx = x + (w - 2 * bw - 16) // 2
+        return [('print', bx, by, bw, bh),
+                ('cancel', bx + bw + 16, by, bw, bh)]
+    def _choice_ops(self, ops):
+        bg = self.gui_bar_bg
+        x, y, w, h = self._choice_box()
         ops.append(lambda: self._gui_round(x, y, w, h, bg))
+        # the object preview, centred at the top (print icon if there is none)
+        iw, ih = 130, 104
+        ix = x + (w - iw) // 2
+        iy = y + 12
+        bits = self._choice.get('bits')
+        if bits:
+            bw2, bh2, bdata = bits
+            bx2 = ix + max(0, (iw - bw2) // 2)
+            by2 = iy + max(0, (ih - bh2) // 2)
+            ops.append(lambda bx2=bx2, by2=by2, bw2=bw2, bh2=bh2, bdata=bdata:
+                       self._bmp_at((bw2, bh2, bdata), bx2, by2, COL_PREVIEW,
+                                    bg, ('chp', bw2, bh2)))
+        else:
+            isz = 72
+            ops.append(lambda ix=ix, iy=iy, isz=isz: self._gui_icon_at(
+                'print', ix + (iw - isz) // 2, iy + (ih - isz) // 2,
+                COL_WHITE, bg, isz))
         name = self._choice.get('name', '')
         ops.append(lambda: self._gui_text_center(
-            x, w, y + 14, name[-26:], COL_WHITE, bg, 1))
+            x, w, iy + ih + 10, name[-44:], COL_WHITE, bg, 1))
         eta = self._choice.get('eta')
-        sub = ('estimated %s' % eta) if eta else 'reading the file...'
-        ops.append(lambda: self._gui_text_center(
-            x, w, y + 40, sub, COL_DIM2, bg, 1))
+        sub = ('estimated %s' % eta) if eta else ''
+        if sub:
+            ops.append(lambda: self._gui_text_center(
+                x, w, iy + ih + 30, sub, COL_DIM2, bg, 1))
         for (kind, bx, by, bw, bh) in self._choice_btns():
-            lab = "Print" if kind == 'print' else "Delete"
+            lab = "Print" if kind == 'print' else "Cancel"
             acc = COL_OK if kind == 'print' else COL_ERR
             ops.append(lambda bx=bx, by=by, bw=bw, bh=bh: self._gui_round(
-                bx, by, bw, bh, self.gui_btn_bg))
+                bx, by, bw, bh, self.gui_btn_bg, bg))
             ops.append(lambda bx=bx, by=by, bw=bw, bh=bh, lab=lab:
                        self._gui_text_center(bx, bw, by + (bh - 16) // 2,
                                              lab, COL_WHITE, self.gui_btn_bg,
@@ -4146,31 +4169,24 @@ class ST7796:
                 est = int(d.get('estimated_time') or 0)
             except Exception:
                 est = 0
-            if est > 0 and self._choice is not None:
-                self._choice = {'name': name,
-                                'eta': '%dh%02dm' % (est // 3600,
-                                                     (est % 3600) // 60)}
-            self._gui_pending = time.monotonic() + 0.2
-        threading.Thread(target=_run, daemon=True).start()
-    def _file_delete(self, name, eventtime):
-        def _run():
-            ok = False
+            bits = None
             try:
-                q = urllib.parse.quote(name)
-                req = urllib.request.Request(
-                    'http://127.0.0.1:7125/server/files/gcodes/' + q,
-                    method='DELETE')
-                with urllib.request.urlopen(req, timeout=10) as r:
-                    ok = r.status == 200
+                d = self._sd_dir()
+                if d:
+                    bw2, bh2, bdata = tft_thumb.thumbnail_bitmap(
+                        os.path.join(d, name), 120)
+                    if bdata:
+                        bits = (bw2, bh2, bdata)
             except Exception:
-                ok = False
-            self._notice = (("File deleted" if ok else "Delete failed"),
-                            name[-40:])
-            self._notice_icon = 'check' if ok else 'alert'
-            self._sd_cache_t = 0.
+                bits = None
+            if self._choice is not None:
+                self._choice = {
+                    'name': name,
+                    'eta': ('%dh%02dm' % (est // 3600, (est % 3600) // 60)
+                            if est > 0 else None),
+                    'bits': bits}
             self._gui_pending = time.monotonic() + 0.2
         threading.Thread(target=_run, daemon=True).start()
-
     # --- custom macros (panel_macros.json) --------------------------------
     def _panel_macros(self):
         path = os.path.expanduser('~/printer_data/config/panel_macros.json')
@@ -5115,7 +5131,6 @@ class ST7796:
                     if kind == 'print':
                         self._gui_do(('sd', name), eventtime)
                     else:
-                        self._file_delete(name, eventtime)
                         self._gui_render(eventtime)
                     return
             self._choice = None
