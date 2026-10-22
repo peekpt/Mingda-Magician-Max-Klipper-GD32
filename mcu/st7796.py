@@ -6,6 +6,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import glob
+import json
 import logging
 import os
 import re
@@ -689,6 +690,10 @@ class ST7796:
         self._kb_shift = False
         self._kb_sym = False
         self._kb_show = False
+        self._err_shown = None
+        self._upd_n = 0
+        self._upd_next = 0.
+        self._upd_busy = False
         self._bstep_i = 1
         self._baby_dirty = False
         self._popup = None
@@ -1128,13 +1133,22 @@ class ST7796:
     def _touch_event(self, eventtime):
         self._mcu_recover(eventtime)
         if self.printer.is_shutdown():
-            # No MCU session: nothing can be drawn or touched on the panel.
+            # Klipper stopped (shutdown): show why and offer a restart
+            try:
+                self._err_panel(eventtime)
+            except Exception:
+                pass
             return eventtime + 0.5
+        self._err_shown = None
         try:
             self._fil_watch(eventtime)
             self._print_watch(eventtime)
         except Exception:
             logging.exception("st7796: watch failed")
+        try:
+            self._upd_check(eventtime)
+        except Exception:
+            pass
         if self.cmd_ping is None:
             if not getattr(self, '_ping_warned', False):
                 self._ping_warned = True
@@ -1655,6 +1669,8 @@ class ST7796:
         if self.gui_version:
             self._gui_text(self.width - 170, 7,
                            (self.gui_version + ' ' * 8)[:8], COL_DIM, bg, 1)
+        if self._upd_n:
+            self._gui_icon_at('refresh', self.width - 152, 7, COL_WARN, bg, 16)
         # Filament runout indicator: green = filament ok, red = runout,
         # grey = sensor disabled/unavailable.
         en, det = self._filament_status(eventtime)
@@ -3993,6 +4009,80 @@ class ST7796:
         if self.gui_screen != 'filout':
             self.gui_screen = 'filout'
             self._gui_render(eventtime)
+    # --- Klipper error panel ---------------------------------------------
+    def _err_btns(self):
+        w = (self.width - self.RAIL_W - 24) // 2
+        y = self.height - self.STRIP_H - 58
+        return [('fw', self.RAIL_W + 8, y, w, 48),
+                ('host', self.RAIL_W + 16 + w, y, w, 48)]
+    def _err_panel(self, eventtime):
+        try:
+            msg = self.printer.get_state_message() or 'Klipper stopped'
+        except Exception:
+            msg = 'Klipper stopped'
+        msg = ' '.join(str(msg).split())
+        if self._err_shown == msg:
+            return
+        self._err_shown = msg
+        bg = self.gui_bar_bg
+        for y in range(0, self.height, 20):
+            self.cmd_rect.send([0, y, self.width,
+                                min(20, self.height - y), COL_BG])
+        self.cmd_rect.send([0, self.TOP_H, self.RAIL_W,
+                            self.height - self.TOP_H, bg])
+        self._gui_icon_at('alert', self.RAIL_W + 10, self.TOP_H + 8, COL_ERR,
+                          COL_BG, 34)
+        self._gui_text(self.RAIL_W + 52, self.TOP_H + 12, "KLIPPER ERROR",
+                       COL_ERR, COL_BG, 2)
+        y = self.TOP_H + 56
+        for line in self._wrap(msg, 46)[:7]:
+            self._gui_text(self.RAIL_W + 8, y, line, COL_WHITE, COL_BG, 1)
+            y += 17
+        for (kind, x, y, w, h) in self._err_btns():
+            self._gui_round(x, y, w, h, self.gui_btn_bg)
+            lab = "Firmware Restart" if kind == 'fw' else "Host Reboot"
+            self._gui_text_center(x, w, y + (h - 16) // 2, lab, COL_WHITE,
+                                  self.gui_btn_bg, 1)
+            self.cmd_rect.send([x + 8, y + h - 9, w - 16, 4,
+                                COL_OK if kind == 'fw' else COL_WARN])
+
+    # --- update check -----------------------------------------------------
+    def _upd_check(self, eventtime):
+        if self._upd_busy or eventtime < self._upd_next:
+            return
+        self._upd_busy = True
+        self._upd_next = eventtime + 300.
+
+        def _run():
+            n = 0
+            try:
+                with urllib.request.urlopen(
+                        'http://127.0.0.1:7125/machine/update/status'
+                        '?refresh=false', timeout=10) as r:
+                    d = json.loads(r.read().decode())['result']
+                for name, vi in (d.get('version_info') or {}).items():
+                    if vi.get('commits_behind'):
+                        n += 1
+            except Exception:
+                n = self._upd_n
+            self._upd_n = n
+            self._upd_busy = False
+        threading.Thread(target=_run, daemon=True).start()
+    def _upd_text(self):
+        try:
+            with urllib.request.urlopen(
+                    'http://127.0.0.1:7125/machine/update/status'
+                    '?refresh=false', timeout=8) as r:
+                d = json.loads(r.read().decode())['result']
+            out = []
+            for name, vi in (d.get('version_info') or {}).items():
+                n = len(vi.get('commits_behind') or [])
+                if n:
+                    out.append("%s: %d behind" % (name, n))
+            return " / ".join(out) or "everything is up to date"
+        except Exception:
+            return "cannot read the update status"
+
     # --- on-screen keyboard ----------------------------------------------
     _KB_LETTERS = (list('qwertyuiop'),
                    list('asdfghjkl') + ['BK'],
@@ -4807,6 +4897,25 @@ class ST7796:
             script = "M300 S600 P12\n" + (script or "")
         self._gui_run_action(script)
     def _gui_tap(self, rx, ry, eventtime):
+        sx0, sy0 = self._raw_to_screen(rx, ry)
+        if self.printer.is_shutdown():
+            for (kind, x, y, w, h) in self._err_btns():
+                if x <= sx0 < x + w and y <= sy0 < y + h:
+                    try:
+                        if kind == 'fw':
+                            self.gcode.run_script_from_command(
+                                'FIRMWARE_RESTART')
+                        else:
+                            self._host_power('reboot')
+                    except Exception:
+                        logging.exception("st7796: error action failed")
+                    return
+            return
+        if (self.width - 156) <= sx0 < (self.width - 136) and 2 <= sy0 < 28:
+            self._notice = ("Updates available", self._upd_text()[:40])
+            self._notice_icon = 'refresh'
+            self._gui_render(eventtime)
+            return
         if self._notice:
             self._notice = None
             self._gui_render(eventtime)
