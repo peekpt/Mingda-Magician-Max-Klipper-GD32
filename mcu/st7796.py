@@ -4562,8 +4562,14 @@ class ST7796:
             self._pid_last = 0.          # take the first sample at once
             self._gui_msg = "PID %s %dC - running" % (
                 "hotend" if heater == 'extruder' else "bed", target)
-            self._gui_msg_until = now + 900.
-            script = 'PID_CALIBRATE HEATER=%s TARGET=%d' % (heater, target)
+            self._gui_msg = ("Homing, Z+50, fan 60%%, then PID %dC..."
+                             % target)
+            self._gui_msg_until = now + 1200.
+            # home, lift the nozzle clear of the bed, run the fan at 60 %
+            # (same conditions as a print) and only then tune the PID
+            script = ('G28\nG91\nG1 Z50 F600\nG90\nM106 S153\n'
+                      'PID_CALIBRATE HEATER=%s TARGET=%d\nM106 S0'
+                      % (heater, target))
             self._gui_render(eventtime)      # the graph, before the run starts
         elif isinstance(action, tuple) and action[0] == 'zp':
             kind = action[1]
